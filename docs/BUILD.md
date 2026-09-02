@@ -19,8 +19,10 @@ screen). Use **HDMI**, not AirPlay, to avoid input lag.
 | 1 | MCU board | **ESP32-S3** dev board (native USB, e.g. ESP32-S3-DevKitC-1 / Seeed XIAO ESP32-S3) | 1 | Native USB = shows up as `/dev/tty.usbmodem*` on Mac | you have it |
 | 2 | IR position camera | **PixArt IR camera** — DFRobot "Positioning IR Camera" (SEN0158) or a salvaged Wii Remote camera (PAJ7025R2) | 1 | Outputs up to 4 IR blob coordinates over I²C (addr `0x58`) | $25–40 |
 | 3 | Trigger switch | Momentary **micro switch** (SPDT lever, e.g. Omron D2F / "arcade microswitch") | 1 | Wired to a GPIO with internal pull-up | $1 |
-| 4 | IR LEDs (beacons) | **940 nm** IR LED, 5 mm, wide angle | 4 (min) / 8 (better) | Mounted at the 4 screen corners; sand tips flat to widen beam | $0.20 ea |
-| 5 | Resistors for LEDs | 150–220 Ω, 1/4 W | 4–8 | One per IR LED (see wiring) | $0.05 ea |
+| 4 | IR LEDs (beacons) | **940 nm** IR LED, 5 mm, wide angle (IR333C / TSAL6100 / SFH 4544) | 4 (min) / 8 (better) | Mounted at the 4 screen corners; sand tips flat to widen beam | $0.20 ea |
+| 5 | Resistors for LEDs | **100–120 Ω**, 1/4 W | 4–8 | One per IR LED — sized for the **3 V** corner modules (see wiring) | $0.05 ea |
+| 5a | Battery holder for beacons | **2×AAA with a switch** | 4 | One per corner: each beacon is standalone, no wiring between them | $1.75 ea |
+| 5b | AAA batteries | alkaline | 8 | 60+ h of play per set | $0.50 ea |
 | 6 | USB-C data cable | Good quality **data** cable (not charge-only) | 1 | Gun → Mac; also powers the ESP32 | $5 |
 | 7 | Hook-up wire | 24–26 AWG stranded, a few colors | small roll | Internal wiring | $5 |
 
@@ -68,7 +70,7 @@ Pins below match the firmware constants — change both together if you re-route
 | Trigger | `GPIO 4` (`PIN_TRIGGER`) | micro switch → other leg to **GND** (uses `INPUT_PULLUP`) |
 | Solenoid (opt.) | `GPIO 5` (`PIN_SOLENOID`) | MOSFET gate (via module) |
 | Camera power | `3V3` | IR camera VCC (PixArt logic is 3.3 V) |
-| Common ground | `GND` | camera GND, switch, MOSFET, LED supply GND |
+| Common ground | `GND` | camera GND, trigger switch, MOSFET (the beacons share no ground — they are a separate, battery-powered device) |
 
 Notes:
 - **I²C pull-ups:** the DFRobot SEN0158 module has them onboard. A bare/salvaged
@@ -80,33 +82,40 @@ Notes:
 
 **Important:** the beacons are a *separate* device — they do **not** connect to the
 gun or the Mac in any way. Like a Wii sensor bar, they just emit IR light toward the
-player; the gun's camera *sees* them optically. Beacons need **power only (5 V)**.
+player; the gun's camera *sees* them optically. Beacons need **power only**.
 
 Four 940 nm IR LEDs, one at each screen/TV corner, defining the aiming rectangle.
+Minimum is 4 points (corners) for a clean 4-corner homography; two LEDs (a top bar
+only) works but calibrates less accurately.
 
-**Powering / wiring options:**
-- **Wired frame (simplest, recommended to start):** run a thin 2-wire lead (5 V + GND)
-  along the screen bezel to all 4 corners; each LED+resistor sits in parallel across
-  it. Single USB plug into the **TV's USB port** or a power bank. Hide the wire under
-  the bezel.
-- **Wireless corners (no wires across the screen):** make each corner a tiny standalone
-  module = IR LED + resistor + coin cell (CR2032) / AAA. Four independent clips, zero
-  wiring between them; you just swap batteries occasionally.
-- Minimum is 4 points (corners) for a clean 4-corner homography. Two LEDs (top bar
-  only) works but calibrates less accurately.
+**Chosen scheme: four independent 3 V corners.** Each corner is its own tiny module —
+IR LED + resistor + **2×AAA holder with a switch** — clipped to the bezel. No wires
+run across or around the screen, nothing plugs into the TV, and each corner is
+switched off separately when you are done playing.
 
 ```
-  [LED]───────────────[LED]      each LED in series with a 150–220 Ω resistor
-    │      SCREEN        │        all LEDs powered from one 5 V source
-    │                    │        (TV USB port or a power bank)
-  [LED]───────────────[LED]
+  [LED]               [LED]      each corner is standalone:
+    │      SCREEN        │
+    │                    │       bat(+) → switch → resistor → LED(anode)
+  [LED]               [LED]      LED(cathode) → bat(−)        2×AAA = 3 V
 ```
 
-- Per-LED resistor for 5 V supply: `R = (5V − 1.3V) / 0.02A ≈ 185 Ω` → use **180–220 Ω**
-  for ~20 mA each. Wire each LED+resistor in parallel across the 5 V rail.
+- **Resistor for 3 V:** `R = (3V − 1.3V) / 0.015A ≈ 113 Ω` → use **100–120 Ω** for
+  ~14 mA per LED. Do **not** reuse the 180–220 Ω value from a 5 V rail — at 3 V that
+  starves the LED and the camera may not see the dot.
+- **Runtime:** 2×AAA at ~14 mA lasts 60+ hours, and the brightness stays flat almost
+  to the end. CR2032 coin cells were considered and rejected: same 3 V, but only
+  ~10–15 h and they sag as they drain.
 - **Sand the LED domes flat** — it diffuses the beam so the camera sees them across
   a wider angle (IR LEDs are very directional otherwise).
 - Aim the LEDs toward the player's play zone.
+- **Check with a phone camera:** a powered 940 nm LED shows up as a pale violet dot on
+  the phone's screen (the naked eye sees nothing).
+
+*Alternative, if you would rather not have batteries:* run a thin 2-wire lead (5 V +
+GND) along the bezel to all four corners, each LED in series with its own
+**180–220 Ω** resistor (`(5V − 1.3V)/0.02A ≈ 185 Ω`), the whole frame fed from one USB
+plug (TV USB port or a power bank).
 
 ---
 
@@ -118,8 +127,9 @@ Four 940 nm IR LEDs, one at each screen/TV corner, defining the aiming rectangle
    the coordinates should react. This proves the camera + I²C work.
 2. **Wire the trigger.** Micro switch between `GPIO 4` and `GND`. Pressing it should
    flip the last field of the serial line to `1`.
-3. **Build the beacons.** Solder the 4 IR LEDs + resistors, mount at the screen
-   corners, power from 5 V. Confirm the camera now reports up to 4 points.
+3. **Build the beacons.** Solder 4 standalone modules (LED + 100–120 Ω resistor +
+   2×AAA holder with a switch), check each one with a phone camera, clip them to the
+   screen corners. Confirm the camera now reports up to 4 points.
 4. **First play (crosshair ON).** Run `python3 main.py --serial /dev/tty.usbmodemXXXX`.
    Keep the on-screen crosshair visible — it's your calibration debug tool. Aim and
    watch where the `+` lands vs. where the barrel points.
@@ -165,7 +175,7 @@ approach used by [ddean-blip/esp32-lightgun](https://github.com/ddean-blip/esp32
 | (optional) M12 wide lens | ~120° cropped to ~85° | 1 | wider aiming cone |
 
 Everything else (trigger, wiring, recoil, wireless, enclosure) stays the same — **but
-you drop the 4 IR LEDs + their resistors** (item #4/#5), since there are no beacons.
+you drop the whole beacon kit** (items #4, #5, #5a, #5b), since there are no beacons.
 
 **Firmware:** use [`firmware/esp32cam_bezel/esp32cam_bezel.ino`](../firmware/esp32cam_bezel/esp32cam_bezel.ino)
 (skeleton) instead of `esp32_lightgun.ino`. It captures a grayscale QVGA frame,

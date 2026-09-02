@@ -1,9 +1,17 @@
 """Duck Hunt entry point.
 
-    python3 main.py                                  # play with the keyboard
-    python3 main.py --serial /dev/tty.usbmodemXXXX   # play with the light gun
+    python3 main.py --pygame                                    # pixel art, aim with the mouse
+    python3 main.py --pygame --serial /dev/tty.usbserial-0001   # pixel art + LIGHT GUN
+    python3 main.py                                             # the old ASCII frontend, keyboard
 
-To list the ESP32 ports on a Mac:  ls /dev/tty.usbmodem*  or  ls /dev/tty.usbserial*
+Playing with the light gun: if the remote is already paired with the bridge it just
+works — opening the port no longer reboots the ESP32 (see input/serial_gun.py). If it
+is not paired, press the red SYNC button on the Wii Remote once the board is up (it
+prints "# BT init..."); pairing takes well under a second. A SYNC pressed while the
+board is still booting is not heard — that is what "the remote won't connect" looks
+like.
+
+To list the ESP32 ports on a Mac:  ls /dev/tty.usbserial*  or  ls /dev/tty.usbmodem*
 """
 
 from __future__ import annotations
@@ -38,8 +46,10 @@ class GunWithKeyboardQuit(InputSource):
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Duck Hunt (terminal + light gun)")
-    ap.add_argument("--serial", metavar="PORT", help="ESP32 port, e.g. /dev/tty.usbmodem1101")
+    ap = argparse.ArgumentParser(description="Duck Hunt — NES pixel art + light gun")
+    ap.add_argument("--serial", metavar="PORT",
+                    help="light gun on the ESP32 bridge, e.g. /dev/tty.usbserial-0001 "
+                         "(press SYNC on the remote if it is not paired yet)")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--wiimote", action="store_true",
                     help="read the Wii Remote directly over Bluetooth (needs hidapi + WiimotePair)")

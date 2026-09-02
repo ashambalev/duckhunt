@@ -1,4 +1,8 @@
-# Sprites (assets)
+# Pixel art (assets)
+
+The NES sprites and backgrounds the pygame frontend draws — the game's main look.
+Cut out of the original sheets in `source/` by the scripts in `tools/`; nothing
+here is needed by the ASCII frontend.
 
 ## Where they came from
 
@@ -56,7 +60,8 @@ grass = 0.8
 ```
 
 Which background to start with is set in `settings.toml`, section `[scene]`; in
-game they cycle with the **B** key.
+game they cycle with the **B** key. The scene is scaled up by a whole number of
+times, so the pixels stay square (see the root [`README.md`](../README.md)).
 
 ## Fallback path
 

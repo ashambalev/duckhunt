@@ -367,6 +367,7 @@ class PygameFrontend:
             k = max(2, min(4, (info.current_h - 120) // bh))
             W, H = bw * k, bh * k
             display = pygame.display.set_mode((W, H))
+            sw, sh = W, H
             offset = (0, 0)
             screen = display
         pygame.mouse.set_visible(False)      # the game draws its own crosshair
@@ -504,7 +505,16 @@ class PygameFrontend:
                 st = source.poll()
                 if st.quit:
                     running = False
-                crosshair[0], crosshair[1] = st.x, st.y
+                # The gun aims at the PHYSICAL screen (its beacons sit at the screen
+                # corners), so st.x/st.y are fractions of the display — while the
+                # scene is a letterboxed rectangle inside it. Convert display
+                # fraction -> scene fraction, the same trick the mouse branch does
+                # with pygame.mouse.get_pos(). Without this the crosshair lags
+                # behind the barrel by up to half the black bar at the edges.
+                # (Windowed play cannot be corrected — we do not know where the
+                # window sits on screen — so play fullscreen when using the gun.)
+                crosshair[0] = min(1.0, max(0.0, (st.x * sw - offset[0]) / W))
+                crosshair[1] = min(1.0, max(0.0, (st.y * sh - offset[1]) / H))
                 fire = st.fire
             else:
                 mx, my = pygame.mouse.get_pos()

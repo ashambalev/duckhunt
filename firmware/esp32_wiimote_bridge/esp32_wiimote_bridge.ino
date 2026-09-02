@@ -72,7 +72,11 @@ static bool computeAim(const uint8_t* ir, int& outX, int& outY) {
   }
   if (n == 0) return false;
   float cx = (float)sx / n, cy = (float)sy / n;
-  outX = (int)((1.0f - cx / 1023.0f) * 1000.0f);       // the camera mirrors X
+  // Axis signs are deliberately left alone: with 4 beacons this whole function is
+  // replaced by a homography built from the corner correspondences, and that
+  // transform carries the mirroring itself. (X is mirrored here, Y is not — an
+  // asymmetry that only matters for one-dot testing, so it is not worth chasing.)
+  outX = (int)((1.0f - cx / 1023.0f) * 1000.0f);
   outY = (int)((cy / 767.0f) * 1000.0f);
   outX = constrain(outX, 0, 1000);
   outY = constrain(outY, 0, 1000);

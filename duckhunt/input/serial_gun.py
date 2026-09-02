@@ -29,14 +29,22 @@ class SerialGunInput(InputSource):
     def __init__(self, port: str, baud: int = 115200):
         if serial is None:
             raise RuntimeError("pyserial is not installed: pip install pyserial")
-        self._ser = serial.Serial(port, baud, timeout=0)
-        # Do not hold the reset/boot lines asserted (otherwise the ESP32 reboots
-        # and drops the Wiimote link). The parser ignores "# ..." status lines anyway.
+        # Open WITHOUT rebooting the ESP32. On these CH340 boards DTR/RTS drive the
+        # reset/boot pins, and pyserial asserts them while opening — which rebooted
+        # the bridge and dropped the paired Wii Remote every time the game started.
+        # Configuring the port first and setting dtr/rts False *before* open() makes
+        # pyserial apply them as it opens, so the reset pulse never happens and the
+        # remote stays connected across game restarts.
+        self._ser = serial.Serial()
+        self._ser.port = port
+        self._ser.baudrate = baud
+        self._ser.timeout = 0
         try:
-            self._ser.setDTR(False)
-            self._ser.setRTS(False)
-        except Exception:
+            self._ser.dtr = False
+            self._ser.rts = False
+        except Exception:      # a port/driver that does not expose the lines
             pass
+        self._ser.open()
         self._buf = b""
         self._x = 0.5
         self._y = 0.5
