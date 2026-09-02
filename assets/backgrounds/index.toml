@@ -1,0 +1,21 @@
+# Backgrounds sliced out of assets/source/backgrounds.png by
+# tools/slice_backgrounds.py. Pick one in settings.toml, [scene].
+#
+# grass — the fraction of the height where the grass starts: the dog
+# pops up along that line. Your own background can just be appended here.
+
+[meadow]
+file = "meadow.png"
+grass = 0.798   # a tree and a bush, blue sky
+
+[sunset]
+file = "sunset.png"
+grass = 0.798   # the same against a pink sunset sky
+
+[mountains]
+file = "mountains.png"
+grass = 0.820   # mountains and a fir wood
+
+[clouds]
+file = "clouds.png"
+grass = 0.803   # clouds above tall grass

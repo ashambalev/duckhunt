@@ -1,0 +1,119 @@
+"""Game core: the world state and how it is updated. No rendering, no terminal.
+
+Every frame the frontend calls `world.update(dt, aim_x, aim_y, fire)` and then
+reads `world.ducks`, `world.score` and so on to draw the scene however it likes
+(ASCII, sprites, 3D — makes no difference). The core is deterministic for a given
+seed, which is handy for tests.
+"""
+
+from __future__ import annotations
+
+import random
+
+from .config import Settings, load
+from .models import Duck, DuckState, Facing
+
+# A round is finite: we release `settings.round.ducks` ducks and that is it —
+# the result goes into the high-score table. Duck size, speed and spawn rate live
+# in settings.toml, see duckhunt/core/config.py.
+
+
+class World:
+    def __init__(self, seed: int | None = None, settings: Settings | None = None):
+        self.settings = settings if settings is not None else load()
+        self.rng = random.Random(seed)
+        self.ducks: list[Duck] = []
+        self.score = 0
+        self.shots = 0
+        self.hits = 0
+        self.spawn_timer = 0.0
+        self.spawn_interval = self.settings.round.interval
+        self.released = 0        # how many ducks have been released this round
+        self.elapsed = 0.0       # how long the round has been running, seconds
+        # events driving the dog's reactions (monotonic counters; the frontend
+        # watches them for increments)
+        self.landed = 0    # a downed duck hit the ground (the dog retrieves it)
+        self.escaped = 0   # a live duck flew off screen (the dog laughs)
+
+    @property
+    def accuracy(self) -> float:
+        return (self.hits / self.shots * 100.0) if self.shots else 0.0
+
+    @property
+    def total(self) -> int:
+        """How many ducks there are in a round."""
+        return self.settings.round.ducks
+
+    @property
+    def finished(self) -> bool:
+        """Round over: every duck has been released and none is left on screen."""
+        return self.released >= self.total and not self.ducks
+
+    def spawn(self) -> None:
+        duck = self.settings.duck
+        from_left = self.rng.random() < 0.5
+        facing = Facing.RIGHT if from_left else Facing.LEFT
+        x = -duck.width if from_left else 1.0
+        speed = self.rng.uniform(duck.speed_min, duck.speed_max)
+        vx = speed if from_left else -speed
+        self.ducks.append(Duck(
+            x=x,
+            y=self.rng.uniform(0.03, 0.75),
+            vx=vx,
+            vy=self.rng.uniform(-duck.bob, duck.bob),
+            w=duck.width,
+            h=duck.height,
+            facing=facing,
+            variant=self.rng.randrange(2),
+        ))
+        self.released += 1
+
+    def update(self, dt: float, aim_x: float, aim_y: float, fire: bool) -> None:
+        if self.finished:
+            return
+        self.elapsed += dt
+
+        # spawn new ducks until the whole flock has been released
+        self.spawn_timer += dt
+        if self.released < self.total and self.spawn_timer >= self.spawn_interval:
+            self.spawn_timer = 0.0
+            self.spawn()
+            rnd = self.settings.round
+            self.spawn_interval = max(rnd.min_interval,
+                                      self.spawn_interval * rnd.speedup)
+
+        # a shot — down the first flying duck under the crosshair
+        if fire:
+            self.shots += 1
+            for d in self.ducks:
+                if d.state is DuckState.FLYING and d.contains(aim_x, aim_y):
+                    d.state = DuckState.FALLING
+                    d.vx = 0.0
+                    self.hits += 1
+                    self.score += self.settings.round.points
+                    break
+
+        # physics
+        for d in self.ducks:
+            d.age += dt
+            if d.state is DuckState.FALLING:
+                d.fall_t += dt
+                d.y += self.settings.duck.fall_speed * dt
+            else:
+                d.x += d.vx * dt
+                d.y += d.vy * dt
+                if d.y < 0.0 or d.y > 1.0 - d.h:  # bounce off top/bottom
+                    d.vy = -d.vy
+
+        # drop ducks that left the playfield, counting the events for the dog
+        kept = []
+        for d in self.ducks:
+            gone = not (-0.2 < d.x < 1.2 and d.y < 1.2)
+            if gone:
+                if d.state is DuckState.FALLING:
+                    self.landed += 1      # shot down and fallen -> the dog retrieves it
+                else:
+                    self.escaped += 1     # got away alive -> the dog laughs
+            else:
+                kept.append(d)
+        self.ducks = kept

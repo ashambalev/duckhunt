@@ -1,0 +1,52 @@
+# Duck Hunt settings. Three main knobs:
+#
+#   [round] ducks         — how many ducks per round
+#   [duck]  width/height  — how big the ducks are
+#   [duck]  speed_min/max — how fast they fly
+#
+# All sizes and speeds are IN FRACTIONS OF THE SCREEN, not in pixels: 0.13 across
+# = 13 % of the playfield width, a speed of 0.30 = a third of the screen per
+# second. That is why the same numbers work the same in a window, in fullscreen
+# and in the terminal.
+#
+# The file can be deleted — these same values are then used as defaults.
+# A different set: python3 main.py --pygame --settings hard.toml
+
+[round]
+# A round is `ducks` ducks; when the flock is gone you get the result and the
+# high-score table (scores.json). Round length ≈ ducks × interval, i.e. about a
+# minute for 100 × 0.6.
+ducks = 100           # ducks per round
+interval = 0.6        # pause between launches, seconds
+
+points = 1            # points per duck downed: 1 point = 1 duck
+speedup = 1.0         # 1.0 — a steady pace all round; 0.99 — speeds up towards the end
+min_interval = 0.5    # the pace stops growing once the pause gets this short
+
+[duck]
+# Duck size. This is both the hitbox (used for hit detection) and the sprite size:
+# the image is scaled up by a whole number of times to reach this width, so the
+# sprite size changes in steps (0.09 and 0.11 give the same thing, while 0.13 is
+# already bigger), whereas the hitbox changes smoothly.
+width = 0.13          # width, fraction of screen width (0.13 ≈ NES proportions)
+height = 0.16         # height, fraction of screen height
+
+# Flight speed: each duck gets a random value between min and max.
+# 0.30–0.55 means a duck crosses the screen in 2–3 seconds (for a one-minute round).
+speed_min = 0.30      # fraction of screen per second
+speed_max = 0.55
+
+bob = 0.12            # vertical drift, ± fraction of screen per second
+fall_speed = 0.7      # how fast a downed duck falls
+
+[scene]
+# Background: a name from assets/backgrounds/index.toml — meadow (a tree, blue
+# sky), sunset (the same at sunset), mountains (mountains and a fir wood), clouds
+# (clouds above tall grass). Two more values: "random" picks one at each launch,
+# "none" uses the landscape drawn in code. In game the background cycles with B.
+background = "meadow"
+
+# Fullscreen or windowed. In fullscreen the scene is letterboxed whole and scaled
+# by a whole number of times, so black bars are left at the edges — an NES picture
+# cannot be stretched across a wide monitor without warping the pixels anyway.
+fullscreen = true
