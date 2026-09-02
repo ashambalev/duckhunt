@@ -89,6 +89,27 @@ quits.
 The aim mapping in the bridge is still a stub (it averages the visible IR dots);
 the 4-point homography and corner calibration are the next step.
 
+### To check on the next run
+
+Two changes are in the code but have never been exercised against the hardware —
+the board was unplugged when they were written. Worth a look the next time the gun
+comes out:
+
+- [ ] **Does the remote stay paired across game launches?** `input/serial_gun.py`
+      now opens the port without pulsing DTR/RTS, which on these CH340 boards is what
+      rebooted the bridge and dropped the remote. Start the game with the remote
+      already connected: if the crosshair moves without touching SYNC, it works. If
+      the bridge still reboots (it reprints `# Duck Hunt Wiimote bridge...`), the
+      adapter resets some other way and the SYNC-after-launch dance comes back.
+- [ ] **Does the crosshair reach the screen edges in fullscreen?** `pygame_app.py`
+      now converts gun coordinates from display fractions to scene fractions, so the
+      crosshair should track the barrel all the way into the corners instead of
+      lagging by up to half a black bar. Only meaningful once the beacons give real
+      screen-referenced aim — with one IR dot the aim is relative anyway.
+- [ ] **Does the link drop under load?** One capture lost the remote after 16 s and
+      re-paired itself 0.8 s later; a later 60 s run held fine. If it recurs, put
+      fresh AA cells in the remote before blaming the firmware.
+
 ### Other input paths
 
 | Command | Path |
