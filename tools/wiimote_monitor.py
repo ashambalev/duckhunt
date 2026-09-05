@@ -4,6 +4,9 @@
 It opens the ESP32's serial port and shows, in real time:
   - the firmware's status lines ("# ..."): pairing, IR enabling;
   - whether an IR dot is visible and its coordinates (updated in place);
+  - how many of the four corner beacons the camera has in view right now — four
+    means the firmware is solving the real homography, fewer means it has fallen
+    back to the coarse centroid aim;
   - whether the trigger (the B button) is pressed.
 
 Running it:
@@ -18,6 +21,10 @@ How to use it:
   3. Point the remote at a TV remote control (and HOLD one of its buttons) — the
      IR line should show coordinates instead of "no dot". Pull the trigger and
      you will see FIRE.
+  4. With the four corner beacons switched on, point the remote at the screen
+     from where you would actually stand: "dots=4" is what the homography needs.
+     If it keeps dropping to 3, a corner is outside the camera's narrow (~33°)
+     view — step further back.
   Ctrl-C quits.
 """
 
@@ -39,6 +46,7 @@ def main() -> None:
     seen_point = False
     last_status = time.time()
     npts = 0
+    dots = ""            # the firmware's twice-a-second beacon report
     try:
         while True:
             raw = s.readline()
@@ -50,7 +58,10 @@ def main() -> None:
 
             if line.startswith("#") or (not line[0].isdigit() and line[0] != "-"):
                 # a firmware status line, or bootloader noise
-                if line.startswith("#"):
+                if line.startswith("# dots"):
+                    # folded into the live line below instead of scrolling past
+                    dots = line[2:]
+                elif line.startswith("#"):
                     print("  " + line, flush=True)
                 continue
 
@@ -65,13 +76,13 @@ def main() -> None:
 
             fire = "🔴FIRE" if (b & 1) else "     "
             if x < 0:
-                msg = f"IR: no dot            {fire}"
+                msg = f"IR: no dot            {fire}  {dots}"
             else:
                 npts += 1
                 if not seen_point:
                     seen_point = True
                     print(f"\n✅ FIRST DOT ACQUIRED: x={x} y={y}\n", flush=True)
-                msg = f"IR: x={x:4d} y={y:4d}   {fire}  (dots seen: {npts})"
+                msg = f"IR: x={x:4d} y={y:4d}   {fire}  {dots}"
 
             # refresh the line in place no more than ~10 times a second
             if time.time() - last_status > 0.1:

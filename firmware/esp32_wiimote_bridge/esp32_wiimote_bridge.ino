@@ -21,10 +21,15 @@
  */
 
 #include <Arduino.h>
+#include <math.h>
 #include <Wiimote.h>
 
 Wiimote   wii;
 static uint16_t g_handle = 0;
+
+// One IR blob in the camera's own 1024x768 space. Declared up here because
+// the Arduino preprocessor writes its function prototypes above the sketch.
+struct Dot { float x, y; int size; };   // size: the blob's extent, 0..15
 
 // Rumble recoil: a short pulse of the remote's vibration motor on a trigger pull.
 static const unsigned long RUMBLE_MS = 90;
@@ -33,8 +38,15 @@ static unsigned long g_rumble_until = 0;
 
 // Step-by-step IR camera enabling: one command per IR_STEP_MS, so the remote has
 // time to acknowledge each register write (sent in one burst, they get lost).
-static const uint8_t SENS1[9] = {0x00,0x00,0x00,0x00,0x00,0x00,0x90,0x00,0x41};
-static const uint8_t SENS2[2] = {0x40,0x00};
+// IR sensitivity. The two blocks end in a pair of thresholds, and the lower they
+// are the fainter a dot the camera will still latch onto. These are the Wii's own
+// "level 5" (its most sensitive) values, chosen after a run where all four beacons
+// came back as blobs of size 0-2 out of 15 and kept dropping out. The gentler
+// setting the bridge used before is one line down if a bright room starts
+// producing phantom dots (reflections, sunlight, an incandescent bulb).
+static const uint8_t SENS1[9] = {0x07,0x00,0x00,0x71,0x01,0x00,0x72,0x00,0x20};
+static const uint8_t SENS2[2] = {0x1F,0x03};
+// gentler: SENS1 {0x00,0x00,0x00,0x00,0x00,0x00,0x90,0x00,0x41}, SENS2 {0x40,0x00}
 static const uint8_t V08[1]   = {0x08};
 static const uint8_t MODE3[1] = {0x03};
 static const unsigned long IR_STEP_MS = 60;
@@ -59,33 +71,166 @@ static void ir_sequencer() {
   g_ir_step++;
 }
 
-// The 4 IR dots from report 0x33 -> an aim point in 0..1000. A STUB (averaging the
-// visible dots), as in the other firmwares. A proper four-corner homography is a TODO.
-static bool computeAim(const uint8_t* ir, int& outX, int& outY) {
-  long sx = 0, sy = 0; int n = 0;
+// ---- 4 IR dots -> aim point -----------------------------------------------
+// With the four corner beacons lit, the four blobs the camera reports ARE the
+// screen rectangle as seen down the barrel. The aim point is then simply where
+// the CENTRE of the camera image falls inside that rectangle — a projective
+// (homography) mapping, which absorbs distance, tilt and roll for free. Below
+// four dots it degrades to the old centroid guess rather than freezing.
+static const int   CAM_W = 1024, CAM_H = 768;
+static const float CAM_CX = 512.0f, CAM_CY = 384.0f;   // the barrel points here
+
+// The camera's axes against the screen's, both settled on the hardware by a test
+// with nothing to mislabel: cover the two top beacons and watch which dots go
+// dark. The ones low in the sensor frame did, so the sensor's Y runs against the
+// screen's while its X runs with it. (Two earlier "it is inverted" reports came
+// from a build where the fallback still shared these flags with the homography,
+// which needs them the other way round — hence the boot banner that now prints
+// the flags, so a log can never again be about a firmware nobody was running.)
+// Not const: 'x' and 'y' on the serial port flip them while the gun is in your
+// hands. Four separate measurements agreed on these values and the crosshair
+// still felt wrong, so the argument is settled the short way — flip it, look at
+// the screen, and whatever you leave it on is printed and logged.
+static bool CAM_MIRROR_X = false;
+static bool CAM_MIRROR_Y = true;
+
+// Where the beacon rectangle sits against the DISPLAY it surrounds — its centre
+// in display fractions and its size in display widths/heights. The defaults say
+// "the four LEDs are exactly on the display's corners", which is what the game
+// assumes: it converts display coordinates to its own letterboxed picture itself.
+// Change these if the LEDs ended up on a rectangle of a different size or
+// off-centre (a bezel too thin to reach, a TV frame): measure the LED rectangle
+// and the screen with a tape measure and divide. docs/BUILD.md walks through it.
+static const float BEACON_CX = 0.5f, BEACON_CY = 0.5f;
+static const float BEACON_W  = 1.0f, BEACON_H  = 1.0f;
+
+// Diagnostics: the last decoded dots, dumped from loop() so you can see whether
+// all four beacons are actually in view. Twice a second by default (cheap enough
+// to leave on while playing); tools/ir_view.py asks for every frame with 'd'.
+static Dot           g_dots[4];
+static int           g_dots_n = 0;
+static bool          g_dots_fresh = false;
+static unsigned long g_dump_ms = 500;      // 0 = every report, <0 impossible: 'o' = off
+static bool          g_dump_on = true;
+
+// The 12 IR bytes of report 0x33 -> up to 4 visible dots.
+static int ir_dots(const uint8_t* ir, Dot* out) {
+  int n = 0;
   for (int i = 0; i < 4; i++) {
     uint8_t b0 = ir[i*3], b1 = ir[i*3+1], b2 = ir[i*3+2];
-    if (b0 == 0xFF && b1 == 0xFF) continue;          // dot not visible
-    int x = b0 | ((b2 & 0x30) << 4);
-    int y = b1 | ((b2 & 0xC0) << 2);
-    sx += x; sy += y; n++;
+    if (b0 == 0xFF && b1 == 0xFF) continue;            // dot not visible
+    out[n].x = (float)(b0 | ((b2 & 0x30) << 4));
+    out[n].y = (float)(b1 | ((b2 & 0xC0) << 2));
+    out[n].size = b2 & 0x0F;      // how big the blob is: a dim beacon reads small
+    n++;
   }
+  return n;
+}
+
+// Four dots -> the quad in image order (top-left, top-right, bottom-right,
+// bottom-left), by which side of the centroid each one falls. Reliable for a
+// rectangle viewed from anywhere in front of it; two dots landing in the same
+// quadrant means it is not a clean rectangle (a reflection, or a stray IR
+// source), so the caller falls back.
+static bool sort_quad(const Dot* d, Dot* q) {
+  float cx = 0, cy = 0;
+  for (int i = 0; i < 4; i++) { cx += d[i].x; cy += d[i].y; }
+  cx /= 4.0f; cy /= 4.0f;
+  int idx[4] = { -1, -1, -1, -1 };
+  for (int i = 0; i < 4; i++) {
+    int slot = (d[i].y > cy) ? ((d[i].x > cx) ? 2 : 3)
+                             : ((d[i].x > cx) ? 1 : 0);
+    if (idx[slot] >= 0) return false;
+    idx[slot] = i;
+  }
+  for (int i = 0; i < 4; i++) q[i] = d[idx[i]];
+  return true;
+}
+
+// Where (px,py) sits inside the quad, in 0..1 along its own two axes. Heckbert's
+// unit-square -> quad projective map, built from the four corners and then
+// inverted (3x3 adjugate; the determinant cancels in the u=U/W division).
+static bool aim_in_quad(const Dot* q, float px, float py, float& u, float& v) {
+  float x0=q[0].x, y0=q[0].y, x1=q[1].x, y1=q[1].y;
+  float x2=q[2].x, y2=q[2].y, x3=q[3].x, y3=q[3].y;
+  float sx = x0 - x1 + x2 - x3;
+  float sy = y0 - y1 + y2 - y3;
+  float a, b, c, d, e, f, g, h;
+  if (fabsf(sx) < 1e-4f && fabsf(sy) < 1e-4f) {        // no perspective -> affine
+    a = x1-x0; b = x2-x1; c = x0;
+    d = y1-y0; e = y2-y1; f = y0;
+    g = 0.0f;  h = 0.0f;
+  } else {
+    float dx1 = x1-x2, dx2 = x3-x2, dy1 = y1-y2, dy2 = y3-y2;
+    float den = dx1*dy2 - dx2*dy1;
+    if (fabsf(den) < 1e-6f) return false;              // degenerate quad
+    g = (sx*dy2 - dx2*sy) / den;
+    h = (dx1*sy - sx*dy1) / den;
+    a = x1-x0+g*x1; b = x3-x0+h*x3; c = x0;
+    d = y1-y0+g*y1; e = y3-y0+h*y3; f = y0;
+  }
+  float A = e - f*h,       B = c*h - b,   C = b*f - c*e;
+  float D = f*g - d,       E = a - c*g,   F = c*d - a*f;
+  float G = d*h - e*g,     H = b*g - a*h, I = a*e - b*d;
+  float U = A*px + B*py + C;
+  float V = D*px + E*py + F;
+  float W = G*px + H*py + I;
+  if (fabsf(W) < 1e-9f) return false;
+  u = U / W; v = V / W;
+  return true;
+}
+
+static bool computeAim(const uint8_t* ir, int& outX, int& outY) {
+  Dot d[4], q[4];
+  int n = ir_dots(ir, d);
+  g_dots_n = n;
+  for (int i = 0; i < n; i++) g_dots[i] = d[i];
+  g_dots_fresh = true;
   if (n == 0) return false;
-  float cx = (float)sx / n, cy = (float)sy / n;
-  // Axis signs are deliberately left alone: with 4 beacons this whole function is
-  // replaced by a homography built from the corner correspondences, and that
-  // transform carries the mirroring itself. (X is mirrored here, Y is not — an
-  // asymmetry that only matters for one-dot testing, so it is not worth chasing.)
-  outX = (int)((1.0f - cx / 1023.0f) * 1000.0f);
-  outY = (int)((cy / 767.0f) * 1000.0f);
-  outX = constrain(outX, 0, 1000);
-  outY = constrain(outY, 0, 1000);
+
+  float u, v;
+  if (n == 4 && sort_quad(d, q) && aim_in_quad(q, CAM_CX, CAM_CY, u, v)) {
+    // The homography reads the aim off the rectangle itself, so here the flags
+    // mean only "which way do the sensor's axes run against the screen's".
+    if (CAM_MIRROR_X) u = 1.0f - u;
+    if (CAM_MIRROR_Y) v = 1.0f - v;
+    // u,v are fractions of the BEACON rectangle; restate them as fractions of
+    // the display, which is what the game expects to receive. (After the flips,
+    // because BEACON_CX/CY are given in the screen's orientation, not the
+    // sensor's.)
+    u = BEACON_CX + (u - 0.5f) * BEACON_W;
+    v = BEACON_CY + (v - 0.5f) * BEACON_H;
+  } else {
+    // FALLBACK: fewer than four beacons in view (or they do not form a quad).
+    // Here the aim is the dot centroid, which slides the OPPOSITE way to the
+    // barrel — swing right and the whole picture shifts left in the frame. So
+    // this branch wants the axes the other way round from the homography, and
+    // sharing one pair of flags between the two is what made the crosshair
+    // invert whenever a beacon dropped out. The scale is still arbitrary and
+    // drifts with distance; only the direction is worth anything.
+    float sx = 0, sy = 0;
+    for (int i = 0; i < n; i++) { sx += d[i].x; sy += d[i].y; }
+    u = (sx / n) / (float)(CAM_W - 1);
+    v = (sy / n) / (float)(CAM_H - 1);
+    if (!CAM_MIRROR_X) u = 1.0f - u;
+    if (!CAM_MIRROR_Y) v = 1.0f - v;
+  }
+
+  outX = constrain((int)(u * 1000.0f), 0, 1000);
+  outY = constrain((int)(v * 1000.0f), 0, 1000);
   return true;
 }
 
 // Status lines get a '#' prefix so they stand out from the data (the game ignores
 // non-numeric lines anyway).
 static void status(const char* s) { Serial.print("# "); Serial.println(s); }
+
+// Printed at boot and again on every flip, so a log always names the axes it was
+// recorded under.
+static void print_axes() {
+  Serial.printf("# axes: MIRROR_X=%d MIRROR_Y=%d\n",
+                (int)CAM_MIRROR_X, (int)CAM_MIRROR_Y);
+}
 
 static void wiimote_cb(wiimote_event_type_t ev, uint16_t handle, uint8_t* data, size_t len) {
   switch (ev) {
@@ -145,12 +290,48 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   status("Duck Hunt Wiimote bridge (USB). Initializing BT...");
+  // Which build is actually running, printed where every log picks it up: after
+  // a couple of flag flips guessed from how the crosshair felt, "was that the
+  // firmware I think it was?" stopped being a rhetorical question.
+  Serial.printf("# build %s %s | MIRROR_X=%d MIRROR_Y=%d | beacon %.2fx%.2f @ %.2f,%.2f\n",
+                __DATE__, __TIME__, (int)CAM_MIRROR_X, (int)CAM_MIRROR_Y,
+                BEACON_W, BEACON_H, BEACON_CX, BEACON_CY);
   wii.init(wiimote_cb);
 }
 
 void loop() {
   wii.handle();                                          // services the BT stack
   ir_sequencer();                                        // step-by-step IR enabling
+
+  // One-letter commands on the same port, for the debugging tools:
+  //   d = dump the dots on every camera report (tools/ir_view.py wants this)
+  //   s = back to twice a second (the default)      o = no dumping at all
+  while (Serial.available()) {
+    switch (Serial.read()) {
+      case 'd': g_dump_ms = 0;   g_dump_on = true;  status("dot dump: every report"); break;
+      case 's': g_dump_ms = 500; g_dump_on = true;  status("dot dump: 2 Hz"); break;
+      case 'o': g_dump_on = false;                  status("dot dump: off"); break;
+      case 'x': CAM_MIRROR_X = !CAM_MIRROR_X; print_axes(); break;
+      case 'y': CAM_MIRROR_Y = !CAM_MIRROR_Y; print_axes(); break;
+      case '?': print_axes(); break;
+      default: break;                               // newlines and other noise
+    }
+  }
+
+  // DIAGNOSTICS: how many beacons the camera has in view and where they are.
+  // This is the line to watch when the aim goes wrong — four dots in a sane
+  // rectangle means the homography has everything it needs.
+  static unsigned long last_dump = 0;
+  if (g_dump_on && g_dots_fresh && millis() - last_dump >= g_dump_ms) {
+    last_dump = millis();
+    g_dots_fresh = false;
+    char buf[120];
+    int k = snprintf(buf, sizeof(buf), "# dots n=%d", g_dots_n);
+    for (int i = 0; i < g_dots_n && k > 0 && k < (int)sizeof(buf); i++)
+      k += snprintf(buf + k, sizeof(buf) - k, " (%d,%d,%d)",
+                    (int)g_dots[i].x, (int)g_dots[i].y, g_dots[i].size);
+    Serial.println(buf);
+  }
 
   // switch the rumble motor off after the short pulse (non-blocking)
   if (g_rumble_until && millis() > g_rumble_until) {

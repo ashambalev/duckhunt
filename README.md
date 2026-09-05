@@ -66,6 +66,20 @@ Watch what the bridge itself is saying with `tools/wiimote_monitor.py` — it pr
 firmware's `# ...` status lines, so you can see whether the remote is pairing at all
 and whether the camera is picking up IR dots.
 
+To *see* what the camera sees, run `tools/ir_view.py`: it draws the blobs in the
+sensor's own 1024×768 space, the quad the firmware builds out of them, and where the
+aim lands on screen — and it writes the whole run to `logs/ir_view_<time>.jsonl`.
+While aiming at a known corner hold **1**–**4** (**5** for the centre): those tags
+are what let the log answer, afterwards, whether the axis flags are the right way
+round. The summary also reconstructs *which* beacon is missing when only three are
+seen, and whether it fell outside the camera's frame (stand further back) or was
+simply not seen (that LED is dim, misaimed or dead).
+
+```bash
+.venv/bin/python tools/ir_view.py                  # live view + log (quit with Q)
+.venv/bin/python tools/ir_view.py --summary logs/ir_view_<time>.jsonl
+```
+
 The remote re-pairs by itself if the link drops mid-round: the game keeps running and
 the crosshair freezes at its last position until the stream comes back.
 
@@ -86,8 +100,15 @@ quits.
 3. Put the four IR LEDs at the corners of the screen (see
    [`docs/BUILD.md`](docs/BUILD.md)) and run the game with `--serial`.
 
-The aim mapping in the bridge is still a stub (it averages the visible IR dots);
-the 4-point homography and corner calibration are the next step.
+The bridge turns the four beacons into an aim point with a **4-corner homography**:
+the dots the camera reports *are* the screen rectangle seen down the barrel, so the
+aim point is where the centre of the camera image falls inside it — which handles
+distance, angle and gun tilt without any calibration step. It needs all four dots
+at once, and the camera's view is narrow (~33°), so there is a minimum playing
+distance — about 2 m for a 27" monitor, 4 m for a 55" TV, since aiming into one
+corner pushes the opposite one out of frame ([`docs/BUILD.md`](docs/BUILD.md) has
+the table). On fewer than four dots it drops back to the old centroid guess: the
+crosshair keeps moving, but it is no longer screen-referenced.
 
 ### To check on the next run
 
@@ -95,20 +116,71 @@ Two changes are in the code but have never been exercised against the hardware �
 the board was unplugged when they were written. Worth a look the next time the gun
 comes out:
 
-- [ ] **Does the remote stay paired across game launches?** `input/serial_gun.py`
-      now opens the port without pulsing DTR/RTS, which on these CH340 boards is what
-      rebooted the bridge and dropped the remote. Start the game with the remote
-      already connected: if the crosshair moves without touching SYNC, it works. If
-      the bridge still reboots (it reprints `# Duck Hunt Wiimote bridge...`), the
-      adapter resets some other way and the SYNC-after-launch dance comes back.
+- [x] **Does the remote stay paired across game launches? No — measured, it does
+      not.** `input/serial_gun.py` sets DTR/RTS false before opening, and the bridge
+      still reboots on every open: the port comes up printing the ESP32's ROM log
+      and `rst:0x1 (POWERON_RESET)`, twice out of two attempts. The macOS CH340
+      driver drives the lines during `open()` whatever pyserial asks for, so the
+      EN pin gets pulled anyway. **The SYNC-after-launch dance stays**: start the
+      game (or a tool), wait for `# BT init...`, and only then press SYNC or A/1+2.
+      A hardware fix if it becomes annoying: a 10 µF capacitor from EN to GND, or
+      cut the auto-reset trace and flash with the BOOT button instead.
+- [ ] **Do the beacons and the picture line up?** The LEDs go on the corners of
+      the *physical screen*; the picture inside it is smaller, because the pixel
+      art is scaled by a whole number and centred (1280×915 inside 1470×956 on
+      this Mac — bars of 6.5% down the sides, 2.1% top and bottom), and the
+      frontend converts display coordinates to picture coordinates itself. If the
+      LEDs had to go on some other rectangle, describe it to the firmware with
+      `BEACON_CX/CY/W/H` ([`docs/BUILD.md`](docs/BUILD.md)).
+
 - [ ] **Does the crosshair reach the screen edges in fullscreen?** `pygame_app.py`
       now converts gun coordinates from display fractions to scene fractions, so the
       crosshair should track the barrel all the way into the corners instead of
       lagging by up to half a black bar. Only meaningful once the beacons give real
       screen-referenced aim — with one IR dot the aim is relative anyway.
-- [ ] **Does the link drop under load?** One capture lost the remote after 16 s and
-      re-paired itself 0.8 s later; a later 60 s run held fine. If it recurs, put
-      fresh AA cells in the remote before blaming the firmware.
+
+- [x] **Do the four beacons map the right way round? Settled:**
+      `CAM_MIRROR_X = false`, `CAM_MIRROR_Y = true` — the sensor's X runs with the
+      screen's, its Y against it. The test that finally closed it has nothing to
+      mislabel: cover the two top beacons by hand and watch the CAMERA panel in
+      `tools/ir_view.py`. The dots that went dark were the ones *low* in the sensor
+      frame, so a beacon at the top of the screen reports a large sensor y. A
+      one-beacon-at-a-time pass said the same (left pair at sensor x≈386 against
+      x≈930 for the right pair, top pair at y≈644 against y≈346).
+
+      Two of the "it is inverted" reports along the way had nothing to do with the
+      flags at all: they were read off the CAMERA panel, where the dots slide
+      against the barrel by construction — the aim lives in the SCREEN panel
+      below it. Both panels now say so on screen. The rest were one bug: the fallback
+      aim followed the dot centroid, which slides the opposite way to the barrel,
+      so it needs the opposite axis convention from the homography — and the two
+      shared one pair of flags. Replaying the logs, a beacon dropping out moved
+      the crosshair a median 0.45 of the screen and flipped it across the screen
+      more than half the time (now 0.24, never past 0.4). Each flag flip then got
+      judged against whichever build happened to be running, which is why the
+      bridge now prints `# build ... | MIRROR_X=0 MIRROR_Y=1 | beacon ...` at boot,
+      into every log.
+
+- [ ] **Is the camera sensitive enough now?** Three beacon runs came back with
+      every blob at size 0-2 out of 15, and dots dropping in and out constantly, so
+      the IR sensitivity registers went from the gentle "inio" values to the Wii's
+      own level 5 (thresholds `0x20`/`0x1F`). Untested. What to watch in the next
+      `tools/ir_view.py` summary: the per-beacon blob sizes should climb, and if a
+      bright room starts inventing dots that are not there, the gentler block is
+      one commented line below in the firmware.
+
+      First reading after the change: the weakest beacon went from a blob size of
+      0.17 to 1.1, and no phantom dots appeared — better, but the whole set still
+      reads 1-2 out of 15, which is dim. The next lever is current: 100 Ω at 3 V
+      is about 17 mA, and 68 Ω (~25 mA) is still far inside a 5 mm IR LED's
+      rating. The right-bottom beacon is the one to fix first — in the one-beacon
+      pass it vanished in 263 of 331 frames while the other three held steady.
+
+- [ ] **Does the link drop under load?** It does, and often: the first beacon run
+      lost the remote twice in 132 s (at 15.6 s and 38.3 s), each time re-pairing
+      by itself after 7–13 s. An earlier capture dropped it once at 16 s. Fresh AA
+      cells in the remote are the thing to try before blaming the firmware —
+      `tools/ir_view.py` counts the drops in its summary.
 
 ### Other input paths
 
@@ -134,6 +206,10 @@ the same `InputSource`.
 - [ ] **Stage 5** — enclosure (3D-printed shell around the remote), recoil, going
       wireless (Wi-Fi/UDP or BLE, `x,y,b` unchanged).
 - [ ] **Stage 6** — levels, NES sounds, more of that dog 🐕.
+- [ ] **Stage 7** — a leaderboard on a screen of its own: the name is asked before
+      the round, the result goes to a separate server that keeps every attempt in
+      SQLite and shows the best run per player on an old-computer console board
+      with a running line — planned in [`docs/LEADERBOARD.md`](docs/LEADERBOARD.md).
 
 ## How a game goes
 
@@ -146,6 +222,11 @@ result made the top ten, the game asks for a name (**Enter** saves, **Esc**
 skips), and the round goes into `scores.json` in the project root. After that
 **Space** starts another round and **Q** quits. The table is also printed to the
 terminal on exit. On a tied score, whoever spent fewer shots ranks higher.
+
+That table is local to this Mac and keeps ten rounds. Moving it onto a screen of
+its own — a separate server storing every attempt and showing the best result per
+player, console style with a running line — is planned in
+[`docs/LEADERBOARD.md`](docs/LEADERBOARD.md); nothing of it is built yet.
 
 The interface is English (as on the NES): `HIT 37  DUCK 64/100  41s  ACC 58%`,
 `NEW HIGH SCORE`, `HIGH SCORES` — as are the comments in `settings.toml`, the
@@ -248,7 +329,10 @@ the game always runs.
 | `tools/slice_spritesheet.py` | slicing the NES sprite sheet into `assets/sprites/` |
 | `tools/slice_backgrounds.py` | slicing the NES background sheet into `assets/backgrounds/` |
 | `tools/wiimote_monitor.py` | watching the raw `x,y,b` stream while debugging the gun |
+| `tools/ir_view.py` | drawing what the camera sees (the four blobs, the quad, the aim) and logging a test run to `logs/` |
 | `docs/BUILD.md` | BOM, wiring and assembly of the hardware |
+| `docs/TODO.md` | what is left to do on the gun and the game, most useful first |
+| `docs/LEADERBOARD.md` | the plan for the leaderboard server and its console board |
 
 **The layers are independent:** `core` knows nothing about rendering or the
 hardware, so both frontends hook onto it, and every input source speaks the same

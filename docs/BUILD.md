@@ -111,6 +111,77 @@ switched off separately when you are done playing.
 - Aim the LEDs toward the player's play zone.
 - **Check with a phone camera:** a powered 940 nm LED shows up as a pale violet dot on
   the phone's screen (the naked eye sees nothing).
+- **Check them against each other too.** The camera reports each blob's size, and
+  `tools/ir_view.py` prints the average per corner: four similar numbers mean four
+  similar beacons, and one that sits well below the others has a tired battery, the
+  wrong resistor, or is pointing somewhere other than the play zone. On the first
+  runs here the four came out 0.17 / 0.50 / 0.99 / 1.84 — a set that dim loses dots
+  constantly, and the weakest corner drops out altogether.
+
+#### Where exactly to stick them — the picture is smaller than the screen
+
+The game's pixel art is scaled by a **whole** number and centred, so in fullscreen
+it never fills the display: on this Mac (1470×956 logical) the 256×183 background
+comes out ×5 = **1280×915 at offset (95, 20)** — black bars of 6.5% of the width
+down each side and 2.1% of the height top and bottom. The ducks live inside that
+inner rectangle.
+
+That does **not** change where the LEDs go. Stick them on **the corners of the
+physical screen**, all four with the same inset, and let the software do the rest:
+the firmware reports the aim in *display* fractions, and the pygame frontend
+already converts display → picture (`frontends/pygame_app.py`, the crosshair
+block), so the corner of the picture is where the crosshair reaches its corner.
+Aiming into a black bar just parks the crosshair at the picture's edge.
+
+`tools/ir_view.py` draws that inner rectangle in its SCREEN panel, so you can see
+what part of your aiming range the ducks actually occupy.
+
+**If the LEDs cannot sit on the corners** — a bezel too thin to stick to, a TV
+frame that forces them wider, one corner blocked — put them on any rectangle that
+is *centred on the screen and parallel to it*, then tell the firmware what that
+rectangle is, in `BEACON_CX/CY` (its centre, in display fractions) and
+`BEACON_W/H` (its size, in display widths and heights). Tape measure, two
+divisions, done: LEDs spanning 68 cm across a 60 cm-wide screen is
+`BEACON_W = 68/60 = 1.13`. Getting this wrong does not break the aim, it skews it
+by a constant — the crosshair reaches the edge early, or never quite gets there.
+
+#### How far back the four corners can be seen from
+
+The camera has to hold **all four** beacons in frame at once for the firmware to
+solve the homography, and its field of view is narrow (~33° across, ~23° up and
+down). That sets a floor under the playing distance, and the rule below is
+calibrated against real runs rather than the datasheet — `tools/ir_view.py`
+reports what fraction of the frame the beacon rectangle fills, and the runs said:
+34% held four dots 67% of the time, 50% started dropping corners as soon as the
+aim left the middle, 70% spent 45% of its frames down to a single dot.
+
+**Distance = the width of the beacon rectangle × 4.8** for a comfortable 35% of
+the frame; × 3.4 is the bare minimum, and it will drop dots whenever you aim into
+a corner.
+
+| Screen (16:9) | Beacons on its corners | Comfortable | Bare minimum |
+|---|---|---|---|
+| 13.6" MacBook (29 cm wide) | 29 cm | 1.4 m | 1.0 m |
+| 24" (53 cm) | 53 cm | 2.5 m | 1.8 m |
+| 27" (60 cm) | 60 cm | 2.9 m | 2.0 m |
+| 43" (95 cm) | 95 cm | 4.6 m | 3.2 m |
+| 55" (122 cm) | 122 cm | 5.8 m | 4.1 m |
+
+A monitor is comfortable; a big TV is not, and that is the camera's fault — a
+55" wants most of a room. Below the minimum the gun still works, because the
+firmware falls back to a coarse centroid aim on 1-3 dots, but the aim stops being
+screen-referenced: only the direction of movement survives, not the position.
+
+**Precision is not the limit here.** Measured on a steady gun, the aim wobbles by
+0.1-0.2% of the screen — a hundredth of a duck. Shrinking the beacon rectangle to
+buy distance costs almost nothing in noise; what it costs is tolerance, since a
+centimetre of misplaced beacon counts for three times as much on a 40 cm
+rectangle as on a 120 cm one.
+
+If the room cannot give you that distance, move the beacons off the bezel and onto
+a smaller rectangle centred on the screen (a strip of board in front of it, say):
+the maths is identical, and the aim point only has to be rescaled about the centre
+by the ratio of the two widths. A narrower beacon rectangle is seen from closer up.
 
 *Alternative, if you would rather not have batteries:* run a thin 2-wire lead (5 V +
 GND) along the bezel to all four corners, each LED in series with its own
@@ -129,13 +200,17 @@ plug (TV USB port or a power bank).
    flip the last field of the serial line to `1`.
 3. **Build the beacons.** Solder 4 standalone modules (LED + 100–120 Ω resistor +
    2×AAA holder with a switch), check each one with a phone camera, clip them to the
-   screen corners. Confirm the camera now reports up to 4 points.
+   screen corners. Then run `tools/ir_view.py`: it draws the blobs the camera
+   reports and the quad built from them, so you can see all four corners appear —
+   and it logs the run to `logs/` for later reading.
 4. **First play (crosshair ON).** Run `python3 main.py --serial /dev/tty.usbmodemXXXX`.
    Keep the on-screen crosshair visible — it's your calibration debug tool. Aim and
    watch where the `+` lands vs. where the barrel points.
-5. **Calibration (Stage 3).** Replace the placeholder `computeAim()` in the firmware
-   with a 4-corner **homography**: capture the 4 beacon points, map camera space →
-   screen `0..1000`. Add a "point at each corner" calibration routine.
+5. **Check the aim mapping.** `computeAim()` in the bridge firmware already solves
+   the 4-corner homography — no calibration routine is needed, the four beacons
+   *are* the calibration. What does need confirming once on real hardware is the
+   two axis flags at the top of the file (`CAM_MIRROR_X`, `CAM_MIRROR_Y`): if the
+   crosshair runs the wrong way when you sweep the gun, flip the matching flag.
 6. **Add recoil (optional).** MOSFET module: gate→`GPIO 5`, drain→solenoid−,
    solenoid+→+5V supply, source→GND (shared). Fire a short **non-blocking** pulse
    (~50 ms) on trigger — do not use `delay()` in the main loop.

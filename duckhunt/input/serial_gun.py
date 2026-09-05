@@ -65,7 +65,12 @@ class SerialGunInput(InputSource):
         line = None
         while b"\n" in self._buf:
             raw, self._buf = self._buf.split(b"\n", 1)
-            line = raw.strip()  # keep the last complete line (the freshest one)
+            raw = raw.strip()
+            # The bridge also reports its beacon count on this port; skipping the
+            # '#' lines here keeps the freshest *aim* line, not the freshest line.
+            if raw.startswith(b"#"):
+                continue
+            line = raw
 
         if line:
             parsed = self._parse(line)
