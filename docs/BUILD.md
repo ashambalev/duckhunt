@@ -103,6 +103,29 @@ switched off separately when you are done playing.
 - **Resistor for 3 V:** `R = (3V − 1.3V) / 0.015A ≈ 113 Ω` → use **100–120 Ω** for
   ~14 mA per LED. Do **not** reuse the 180–220 Ω value from a 5 V rail — at 3 V that
   starves the LED and the camera may not see the dot.
+- **If the camera keeps losing dots, go lower.** The LED is nowhere near its limit
+  (a 5 mm 940 nm part takes 100 mA continuously); what runs out first is the
+  batteries. Currents below account for the LED's forward voltage rising with
+  current:
+
+  | Resistor | Fresh | Half-drained | Nearly flat | Runtime |
+  |---|---|---|---|---|
+  | 100 Ω | 17 mA | 14 | 12 | ~54 h |
+  | 68 Ω | 25 mA | 20 | 17 | ~38 h |
+  | **47 Ω** | **35 mA** | 27 | 24 | ~27 h |
+  | 33 Ω | 47 mA | 37 | 32 | ~20 h |
+  | 22 Ω | 66 mA | 52 | 45 | ~14 h |
+
+  **47 Ω** is the sweet spot: twice the current, a third of the LED's rating, and
+  still most of a week of evenings per set of cells. Below 33 Ω is not worth it —
+  runtime halves while the light does not keep up, because an LED's efficiency
+  droops as the current climbs. Going 17 → 35 mA buys perhaps 60-70% more light,
+  not double.
+- **Better than a smaller resistor: a third cell.** 3×AAA with 100–120 Ω gives the
+  same 27–32 mA and 30–36 h, and it makes the four corners *match* each other: with
+  only 3 V to play with, two LEDs whose forward voltage differs by 0.2 V end up 11%
+  apart in current, and at 4.5 V that halves to 6%. The uneven corners measured on
+  the first builds are exactly this effect.
 - **Runtime:** 2×AAA at ~14 mA lasts 60+ hours, and the brightness stays flat almost
   to the end. CR2032 coin cells were considered and rejected: same 3 V, but only
   ~10–15 h and they sag as they drain.

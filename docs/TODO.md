@@ -53,8 +53,14 @@ The four beacons now read blob sizes 1-2 out of 15 with the camera at its most
 sensitive setting. It works, but there is no margin: a beacon at size 0 is a
 beacon that vanishes.
 
-- 100 Ω at 3 V is about 17 mA. **68 Ω gives ~25 mA**, still far inside a 5 mm IR
-  LED's rating, and would roughly double the blob size.
+- 100 Ω at 3 V is about 17 mA. **47 Ω gives ~35 mA** — twice the current, a third
+  of what the LED is rated for, and still ~27 h per set of cells. Expect 60-70%
+  more light rather than double: efficiency droops as the current climbs. Below
+  33 Ω the runtime halves and the light does not follow.
+- **Or add a third cell.** 3×AAA with 100–120 Ω draws the same current, lasts
+  longer, and evens the corners out: at 3 V a 0.2 V spread in forward voltage puts
+  two LEDs 11% apart in current, at 4.5 V only 6%. See `docs/BUILD.md` for the
+  full table.
 - Aim matters as much as current: they are directional, so point each one at
   where you actually stand and sand the dome flat.
 - Watch it in the summary's per-beacon table — four similar numbers is what a
