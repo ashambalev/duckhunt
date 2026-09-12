@@ -30,6 +30,7 @@ class World:
         self.spawn_interval = self.settings.round.interval
         self.released = 0        # how many ducks have been released this round
         self.elapsed = 0.0       # how long the round has been running, seconds
+        self.stopped = False     # the player ended the round early — see stop()
         # events driving the dog's reactions (monotonic counters; the frontend
         # watches them for increments)
         self.landed = 0    # a downed duck hit the ground (the dog retrieves it)
@@ -46,8 +47,31 @@ class World:
 
     @property
     def finished(self) -> bool:
-        """Round over: every duck has been released and none is left on screen."""
-        return self.released >= self.total and not self.ducks
+        """Round over: stopped by the player, or the whole flock has come and gone."""
+        return self.stopped or (self.released >= self.total and not self.ducks)
+
+    def stop(self) -> None:
+        """End the round where it stands — what has been shot so far still counts.
+
+        A hundred ducks is a long way to be committed to, so the frontend offers
+        a way out (ESC) that keeps the score rather than throwing it away. The
+        counters are left exactly as they are: `released` says how far the round
+        actually got, and `stopped` says why it ended, so the result screen can
+        tell a short round from a bad one.
+        """
+        self.stopped = True
+        self.ducks.clear()
+
+    @property
+    def floor(self) -> float:
+        """The lowest a duck's top-left corner may go.
+
+        The ducks keep to the top `[duck] sky` of the picture (0.90 = the top
+        90 %), so the grass band at the bottom stays the dog's. This is that
+        limit expressed the way the ducks are stored — as the corner they are
+        positioned by, hence minus their own height.
+        """
+        return max(0.0, self.settings.duck.sky - self.settings.duck.height)
 
     def spawn(self) -> None:
         duck = self.settings.duck
@@ -58,7 +82,7 @@ class World:
         vx = speed if from_left else -speed
         self.ducks.append(Duck(
             x=x,
-            y=self.rng.uniform(0.03, 0.75),
+            y=self.rng.uniform(min(0.03, self.floor), self.floor),
             vx=vx,
             vy=self.rng.uniform(-duck.bob, duck.bob),
             w=duck.width,
@@ -112,7 +136,9 @@ class World:
             else:
                 d.x += d.vx * dt
                 d.y += d.vy * dt
-                if d.y < 0.0 or d.y > 1.0 - d.h:  # bounce off top/bottom
+                # bounce off the top of the picture and off the bottom of the
+                # sky strip ([duck] sky) — never down into the dog's grass
+                if d.y < 0.0 or d.y > self.floor:
                     d.vy = -d.vy
 
         # drop ducks that left the playfield, counting the events for the dog

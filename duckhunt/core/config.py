@@ -26,10 +26,15 @@ SETTINGS_NAME = "settings.toml"
 class DuckSettings:
     width: float = 0.13        # duck width (and its hitbox), fraction of screen width
     height: float = 0.16       # duck height, fraction of screen height
-    speed_min: float = 0.30    # horizontal speed, fraction of screen per second
-    speed_max: float = 0.55
+    speed_min: float = 0.30    # slowest horizontal speed, fraction of screen per second
+    speed_max: float = 0.55    # and the fastest; each duck gets a random one between
     bob: float = 0.12          # vertical drift, ± fraction of screen per second
     fall_speed: float = 0.7    # falling speed of a downed duck
+    # The strip the ducks are allowed to fly in, measured from the TOP of the
+    # picture: 0.90 keeps them in the top 90 %, so the bottom tenth (the grass,
+    # where the dog is) stays clear. A duck is spawned inside this strip and
+    # bounces off its lower edge the same way it bounces off the top.
+    sky: float = 0.90
 
 
 @dataclass(frozen=True)
@@ -42,7 +47,33 @@ class RoundSettings:
     # Seconds between "start" and the first duck. The round does not begin on its
     # own any more: the intro waits for the trigger, and then this counts down, so
     # a light gun player has time to get the gun up and settled.
-    countdown: float = 5.0
+    countdown: float = 3.0
+
+
+@dataclass(frozen=True)
+class DogSettings:
+    """The dog: how big it is and how much of the picture it may use.
+
+    Like everything else here the size is a FRACTION OF THE PICTURE, so the dog
+    keeps its proportions on a 27" monitor and on a 55" TV alike. (It used to be
+    a fixed 150 px, which meant a dog that shrank as the picture grew.) Unlike
+    the ducks it is scaled to exactly this width rather than by a whole number of
+    times — a whole-number step would be a third of a dog at a typical fullscreen
+    scale, which is not a knob anyone can aim with.
+    """
+    width: float = 0.12        # dog width, fraction of the picture's width
+    # The bottom strip of the picture the dog lives in: it walks inside it during
+    # the intro and pops up out of the grass no higher than its top edge. 0.20 =
+    # the bottom fifth. Together with [duck] sky this keeps the ducks and the dog
+    # out of each other's way.
+    band: float = 0.20
+    speed: float = 0.12        # walking speed in the intro, fraction of screen per second
+    pop: float = 1.4           # how long one pop-up reaction lasts, seconds
+    # The dog that comes up holding the ducks you shot, relative to `width`: it
+    # is the reward for hitting something and reads better a little larger than
+    # the dog that walks the grass. The one that laughs at a miss is left at
+    # `width` — that one does not need help being noticed.
+    catch_scale: float = 1.2
 
 
 @dataclass(frozen=True)
@@ -53,6 +84,13 @@ class SceneSettings:
     background: str = "meadow"
     # Fullscreen (the scene is letterboxed whole, black bars at the edges) or windowed.
     fullscreen: bool = True
+    # Which monitor to open on, counting from 0. SDL enumerates displays in its
+    # own order, and that order changes when one is plugged in or wakes from
+    # sleep — so "whichever one it opened on last time" is luck, not a setting.
+    # -1 leaves the choice to SDL, which is what it always did; the display
+    # actually used is printed at startup, so you can read the number off and
+    # pin it here.
+    display: int = -1
     # How the picture is fitted to the screen:
     #   "height"  — as tall as the screen, aspect kept, bars left and right only.
     #               The art pixels then land on a non-whole number of display
@@ -108,14 +146,15 @@ class GunSettings:
     frame: str = "display"     # "picture" (LEDs on the picture) or "display" (on the screen)
     beacon_w: float = 1.0      # rectangle width, in widths of that frame
     beacon_h: float = 1.0      # rectangle height, in heights of that frame
-    beacon_cx: float = 0.5     # its centre, as a fraction of that frame
-    beacon_cy: float = 0.5
+    beacon_cx: float = 0.5     # its centre across, as a fraction of that frame
+    beacon_cy: float = 0.5     # its centre down, as a fraction of that frame
 
 
 @dataclass(frozen=True)
 class Settings:
     duck: DuckSettings = DuckSettings()
     round: RoundSettings = RoundSettings()
+    dog: DogSettings = DogSettings()
     scene: SceneSettings = SceneSettings()
     gun: GunSettings = GunSettings()
 
@@ -184,6 +223,15 @@ def _validated(s: Settings) -> Settings:
                                "speed_max": duck.speed_min})
     if duck.bob < 0:
         duck = DuckSettings(**{**duck.__dict__, "bob": abs(duck.bob)})
+    # The ducks need a strip taller than a duck to fly in, or spawning has
+    # nowhere to put them and the bounce has nothing to bounce off.
+    if not 0 < duck.sky <= 1:
+        _warn("[duck] sky must be in the range (0, 1] — using the default")
+        duck = DuckSettings(**{**duck.__dict__, "sky": DuckSettings().sky})
+    if duck.sky <= duck.height:
+        _warn(f"[duck] sky ({duck.sky:g}) is not taller than a duck "
+              f"({duck.height:g}) — flying them in the whole picture instead")
+        duck = DuckSettings(**{**duck.__dict__, "sky": 1.0})
 
     rnd, base = s.round, RoundSettings()
     fixes = {}
@@ -202,6 +250,21 @@ def _validated(s: Settings) -> Settings:
     if fixes:
         rnd = RoundSettings(**{**rnd.__dict__, **fixes})
 
+    dog, dbase = s.dog, DogSettings()
+    fixes = {}
+    for name in ("width", "pop", "catch_scale"):
+        if getattr(dog, name) <= 0:
+            _warn(f"[dog] {name} must be greater than zero — using the default")
+            fixes[name] = getattr(dbase, name)
+    if not 0 < dog.band <= 1:
+        _warn("[dog] band must be in the range (0, 1] — using the default")
+        fixes["band"] = dbase.band
+    if dog.speed < 0:
+        _warn("[dog] speed cannot be negative — using 0 (a dog standing still)")
+        fixes["speed"] = 0.0
+    if fixes:
+        dog = DogSettings(**{**dog.__dict__, **fixes})
+
     scene = s.scene
     if scene.fit not in ("height", "integer"):
         _warn(f'[scene] fit must be "height" or "integer", not {scene.fit!r} — '
@@ -210,6 +273,10 @@ def _validated(s: Settings) -> Settings:
     if scene.scale < 0:
         _warn("[scene] scale cannot be negative — using 0 (as big as fits)")
         scene = SceneSettings(**{**scene.__dict__, "scale": 0})
+    if scene.display < -1:
+        _warn("[scene] display is a monitor number from 0, or -1 for SDL's "
+              "choice — using -1")
+        scene = SceneSettings(**{**scene.__dict__, "display": -1})
 
     gun, gbase = s.gun, GunSettings()
     fixes = {}
@@ -239,7 +306,7 @@ def _validated(s: Settings) -> Settings:
               "its edge; shrink the picture with [scene] scale instead")
 
     # whether such a background exists is the frontend's business, not this module's
-    return Settings(duck=duck, round=rnd, scene=scene, gun=gun)
+    return Settings(duck=duck, round=rnd, dog=dog, scene=scene, gun=gun)
 
 
 def default_path() -> str:
@@ -261,7 +328,7 @@ def load(path: str | None = None) -> Settings:
         return Settings()
 
     for key in data:
-        if key not in ("duck", "round", "scene", "gun", "spawn"):
+        if key not in ("duck", "round", "dog", "scene", "gun", "spawn"):
             _warn(f"unknown section [{key}] — skipped")
 
     # the spawn rate used to live in [spawn]; old files still work, but ask to move
@@ -275,6 +342,7 @@ def load(path: str | None = None) -> Settings:
     return _validated(Settings(
         duck=_section(DuckSettings, data.get("duck", {}), "duck"),
         round=_section(RoundSettings, rnd, "round"),
+        dog=_section(DogSettings, data.get("dog", {}), "dog"),
         scene=_section(SceneSettings, data.get("scene", {}), "scene"),
         gun=_section(GunSettings, data.get("gun", {}), "gun"),
     ))

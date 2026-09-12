@@ -100,17 +100,25 @@ where it was rather than jump.
 The remote re-pairs by itself if the link drops mid-round: the game keeps running and
 the crosshair freezes at its last position until the stream comes back.
 
-The round starts when you pull the trigger (or press Space) on the title screen,
-and then `[round] countdown` seconds tick down — 5 by default — before the first
-duck, so there is time to get the gun up. A shot has a radius, `[gun] spread`:
-the crosshair circle *is* the hit zone, and the nearest duck touching it falls.
+Every round starts the same way, the first of the session and every one after
+it: the title screen waits for the trigger (or Space), and then `[round]
+countdown` seconds tick down — 3 by default — before the first duck, so there is
+time to get the gun up. Leaving the results screen takes you back to that title
+screen rather than straight into a countdown, so a pull aimed at dismissing the
+score table cannot start the next round by accident. A shot has a radius, `[gun]
+spread`: the crosshair circle *is* the hit zone, and the nearest duck touching it
+falls.
 
-In game: **mouse / gun** aims, **left button / trigger** fires, **B** cycles the
-background, **Tab** shows where the IR beacons go, **G** puts the gun's own
-numbers on the HUD (report rate, how clumped the reports are, how often the
-beacons are out of view, how old the aim is — "it feels laggy" has three
-different causes and these tell them apart), **Space** starts another round
-on the results screen, **Q** or **Esc** quits. `--align` starts with those
+The controls are listed on the title screen and on the results screen — you are
+standing three metres away with a gun in both hands, which is no place to be
+looking things up. In game: **mouse / gun** aims, **left button / trigger**
+fires, **Esc** stops the round early and takes you to the result with the score
+so far still offered to the table, **B** cycles the background, **Tab** shows
+where the IR beacons go, **G** puts the gun's own numbers on the HUD (report
+rate, how clumped the reports are, how often the beacons are out of view, how old
+the aim is — "it feels laggy" has three different causes and these tell them
+apart), **Space** or the trigger leaves the results screen, **Q** quits.
+`--align` starts with those
 targets up, and what it draws follows `[gun] frame`: with `"picture"`, brackets in
 the picture's four corners to tape a bundle into; with `"display"`, the letterbox
 bars go pale grey so the screen's own edge is visible and the brackets sit in the
@@ -256,11 +264,18 @@ A round is **100 ducks in about a minute**. The ducks launch at a steady pace (a
 0.6 s pause) and cross the screen quickly; ammunition is not counted. However many
 you down is your score.
 
-When the flock is gone you get the result: hits, shots, accuracy, time. If the
-result made the top ten, the game asks for a name (**Enter** saves, **Esc**
-skips), and the round goes into `scores.json` in the project root. After that
-**Space** starts another round and **Q** quits. The table is also printed to the
-terminal on exit. On a tied score, whoever spent fewer shots ranks higher.
+The ducks fly in the top `[duck] sky` of the picture (90 % by default) and the
+dog keeps to the bottom `[dog] band` (20 %), so neither gets in the other's way.
+
+When the flock is gone you get the result: hits, shots, accuracy, time. **Esc**
+during a round ends it there and gets you the same screen — the score so far
+counts, and the result says how far the round actually got, so a short round does
+not read as a bad one. If the result made the top ten, the game asks for a name
+(**Enter** saves, **Esc** skips), and the round goes into `scores.json` in the
+project root. After that **Space** or the trigger goes back to the title screen,
+where another pull starts the next round, and **Q** quits. The table is also
+printed to the terminal on exit. On a tied score, whoever spent fewer shots ranks
+higher.
 
 That table is local to this Mac and keeps ten rounds. Moving it onto a screen of
 its own — a separate server storing every attempt and showing the best result per
@@ -282,12 +297,18 @@ ducks = 100           # how many ducks in a round
 interval = 0.6        # pause between launches: round length ≈ ducks × interval
 points = 1            # points per duck
 speedup = 1.0         # 1.0 — a steady pace; less — the round speeds up towards the end
+countdown = 3.0       # seconds from the trigger pull on the title screen to the first duck
 
 [duck]
 width = 0.13          # duck width, fraction of screen width (both hitbox and sprite)
 height = 0.16
 speed_min = 0.30      # speed: fraction of screen per second, random per duck
 speed_max = 0.55
+sky = 0.90            # ducks keep to the top 90 % — the grass below is the dog's
+
+[dog]
+width = 0.12          # dog size, fraction of screen width
+band = 0.20           # and the bottom strip it never rises above
 ```
 
 Everything is in fractions of the screen rather than pixels, so the same numbers
@@ -306,7 +327,35 @@ The scene is set there too:
 [scene]
 background = "meadow"   # sunset | mountains | clouds | random | none
 fullscreen = true       # false — play in a window
+display = -1            # which monitor, counting from 0; -1 — let SDL choose
 ```
+
+With more than one monitor, pin `display`: SDL lists them in its own order and
+that order changes when one is plugged in or wakes from sleep, so left to chance
+the game comes up on the laptop some days and on the TV others — and the IR
+beacons are taped to one particular screen. The startup line says which one it
+took and what else is connected, so you can read the number off it:
+
+```
+display auto of 2 connected [(1470, 956), (1920, 1080)] — using 1920x1080
+```
+
+**On macOS the fullscreen window is opened in two steps** — created plain first,
+then put into fullscreen once Cocoa has actually shown it. macOS applies a
+window's fullscreen state on the window's next *show*, and a window created with
+the flag already set never gets one, so the state is quietly dropped and what you
+get is an ordinary window the size of the desktop: title bar, menu bar and all.
+(Minimising it and bringing it back fixes it by hand — that is the missing show.)
+Measured over eight launches each: 0 of 8 came up fullscreen the one-step way, 8
+of 8 this way. SDL's own `FULLSCREEN` flag is no help in telling the two apart —
+it reads true in both — so the count came from asking the `NSWindow` for its
+`styleMask`.
+
+The game also sets `SDL_VIDEO_MAC_FULLSCREEN_SPACES=0`, which is a separate
+matter: it makes the fullscreen borderless-and-raised instead of a native macOS
+Space, so there is no half-second animation at launch and no extra desktop in
+Mission Control. It does *not* fix the bug above on its own. Set the variable
+yourself before launching to get Spaces back.
 
 Four backgrounds are sliced out of the NES sheet into `assets/backgrounds/`,
 `random` picks one per launch, and `none` uses the landscape drawn in code. In

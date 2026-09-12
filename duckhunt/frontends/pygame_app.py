@@ -170,12 +170,26 @@ DOG_LAUGH = [
     "......KTK...KTK.....",
 ]
 
+# The controls, in one place: shown on the title screen and on the score table,
+# because a player standing three metres away with a gun in both hands has no way
+# to look them up. Remote buttons are named first where there is one — that is
+# the control they actually have in their hands.
+KEYMAP = [
+    ("TRIGGER · SPACE", "start the round, and shoot in it"),
+    ("ESC", "stop the round — the score still counts"),
+    ("Q", "quit Duck Hunt"),
+    ("A (remote) · C", "show / hide the crosshair"),
+    ("B", "next background"),
+    ("TAB", "corner targets for the IR beacons"),
+    ("G", "the gun's report rate and dropouts"),
+    ("HOME (remote) · K", "the bridge's link keep-alive"),
+]
+
 FPS = 60
 SCALE = 5          # one sprite pixel = SCALE screen pixels
 MARK_LIFE = 1.4    # seconds a shot's hole stays on screen before it fades out
 RING_LIFE = 0.22   # ... and how long the ring that snaps out to the hit zone lives
 MARKS_MAX = 24     # keep the last few; a fast round can put out a lot of lead
-DOG_SCALE = 6
 
 
 def aim_to_picture(gun, gx, gy, geom):
@@ -203,6 +217,52 @@ def aim_to_picture(gun, gx, gy, geom):
     return min(1.0, max(0.0, u)), min(1.0, max(0.0, v))
 
 
+def _open_fullscreen(pygame, want_display, desktops):
+    """Open the fullscreen window so that it is actually fullscreen.
+
+    macOS applies a window's fullscreen state when the window is next SHOWN, and
+    a window created with the flag already set never gets a next show — so the
+    state is quietly never applied and what you get is an ordinary window the
+    size of the desktop, title bar, menu bar and all. That is also why minimising
+    it and bringing it back fixes the picture by hand: that IS the next show.
+
+    So do it in two steps: create the window plain, let Cocoa put it on screen,
+    and only then ask for fullscreen. Measured over eight launches each on a
+    two-monitor Mac: 0 of 8 came up fullscreen the one-step way, 8 of 8 this way.
+    Asking the NSWindow for its own styleMask is how that was counted — SDL's own
+    FULLSCREEN flag reads true either way and cannot be trusted here.
+
+    `want_display` is a monitor number or -1 for SDL's choice; with -1 the size
+    stays (0, 0), which pygame reads as "the desktop", and the window lands on
+    the same monitor it always did.
+    """
+    size = desktops[want_display] if want_display >= 0 else (0, 0)
+    where = {"display": want_display} if want_display >= 0 else {}
+    pygame.display.set_mode(size, pygame.NOFRAME, **where)
+    for _ in range(3):                  # let the window get on screen first
+        pygame.event.pump()
+        time.sleep(0.05)
+    return pygame.display.set_mode(size, pygame.FULLSCREEN, **where)
+
+
+def _fit_font(pygame, rows, width, biggest=22):
+    """The largest font the two-column keymap still fits into `width` with.
+
+    The rest of the text is set in fixed point sizes, which is fine for a line or
+    two but not for a block eight rows wide: the picture is 768 px across in a
+    window and 2000 in fullscreen, and the same 22 pt runs off the edge of the
+    first. So the keymap gets its own size, measured rather than guessed.
+    """
+    for size in range(biggest, 8, -1):
+        f = pygame.font.SysFont("Menlo,monospace", size, bold=True)
+        # the two columns are each as wide as their own widest row, and those
+        # two rows are not the same row — so the block is the sum of the maxima
+        if (max(f.size(k)[0] for k, _ in rows)
+                + max(f.size(a)[0] for _, a in rows)) <= width:
+            return f
+    return pygame.font.SysFont("Menlo,monospace", 9, bold=True)
+
+
 def _build(rows, palette, scale):
     """A list of strings -> pygame.Surface (transparent background, integer scale)."""
     import pygame
@@ -221,13 +281,21 @@ def _build(rows, palette, scale):
 SPRITE_DIR = "sprites"
 DUCK_COLORS = ("black", "red")     # the duck colours available on the sheet
 FLAP = (0, 1, 2, 1)                # flap frame order: down-middle-up
-DOG_TARGET_W = 150                 # desired on-screen width of the dog, px
 
 
-def _load_sheet(pygame, assets_dir, duck_w):
+def _load_sheet(pygame, assets_dir, duck_w, dog_w, catch_scale):
     """The frame set from assets/sprites/, or None if it is not there.
 
-    Integer scaling only — anything else makes the pixel art smear.
+    The ducks are scaled by a whole number of times — anything else makes the
+    pixel art smear. The dog is scaled to exactly the width [dog] width asks for,
+    whole number or not: it is a size you set deliberately, and a whole-number
+    step is 54 art pixels wide, which at a typical fullscreen scale is a third of
+    a dog — far too coarse a knob. transform.scale is nearest-neighbour, so the
+    worst that happens is that some of its pixels come out a pixel bigger than
+    others, exactly as they do for the whole picture under fit = "height".
+    One factor for the dog, so its frames keep their proportions against each
+    other — except the retrieving one, which [dog] catch_scale deliberately
+    blows up a little past the rest.
     """
     d = os.path.join(assets_dir, SPRITE_DIR)
     names = [f"duck_{c}_{row}_{i}"
@@ -242,11 +310,12 @@ def _load_sheet(pygame, assets_dir, duck_w):
         raw[name] = pygame.image.load(path).convert_alpha()
 
     k_duck = max(1, round(duck_w / raw[f"duck_{DUCK_COLORS[0]}_fly_1"].get_width()))
-    k_dog = max(1, round(DOG_TARGET_W / raw["dog_walk_1"].get_width()))
+    k_dog = max(1.0, dog_w / raw["dog_walk_1"].get_width())
 
     def up(name, k):
         img = raw[name]
-        return pygame.transform.scale(img, (img.get_width() * k, img.get_height() * k))
+        return pygame.transform.scale(img, (max(1, round(img.get_width() * k)),
+                                            max(1, round(img.get_height() * k))))
 
     ducks = {}
     for c in DUCK_COLORS:
@@ -261,12 +330,18 @@ def _load_sheet(pygame, assets_dir, duck_w):
         "ducks": ducks,
         "dog_walk": [up(f"dog_walk_{i}", k_dog) for i in (1, 2, 3, 4)],
         "dog_laugh": up("dog_laugh_1", k_dog),
-        "dog_catch": up("dog_catch", k_dog),
+        "dog_catch": up("dog_catch", k_dog * catch_scale),
     }
 
 
-def _load_fallback(pygame, assets_dir):
+def _load_fallback(pygame, assets_dir, dog_w, catch_scale):
     """The old path: individual PNGs under fixed names, or the built-in art."""
+    # the built-in dog is drawn as characters, so its scale comes from how wide
+    # those rows are — the same [dog] width in fractions of the picture. Whole
+    # pixels here, because _build paints the art a block at a time.
+    dog_scale = max(1, round(dog_w / max(len(r) for r in DOG_SNIFF_A)))
+    catch_scale_px = max(1, round(dog_scale * catch_scale))
+
     def load(name, fallback):
         path = os.path.join(assets_dir, name + ".png")
         if os.path.exists(path):
@@ -281,8 +356,8 @@ def _load_fallback(pygame, assets_dir):
     right = [load("duck_a", _build(DUCK_R_A, PALETTE, SCALE)),
              load("duck_b", _build(DUCK_R_B, PALETTE, SCALE))]
     right = [right[0], right[1], right[1]]          # three frames out of two
-    walk = [load("dog_walk_a", _build(DOG_SNIFF_A, PALETTE, DOG_SCALE)),
-            load("dog_walk_b", _build(DOG_SNIFF_B, PALETTE, DOG_SCALE))]
+    walk = [load("dog_walk_a", _build(DOG_SNIFF_A, PALETTE, dog_scale)),
+            load("dog_walk_b", _build(DOG_SNIFF_B, PALETTE, dog_scale))]
     one = {
         "right": right,
         "left": [pygame.transform.flip(s, True, False) for s in right],
@@ -291,8 +366,8 @@ def _load_fallback(pygame, assets_dir):
     return {
         "ducks": {c: one for c in DUCK_COLORS},
         "dog_walk": [walk[0], walk[1], walk[0], walk[1]],
-        "dog_laugh": load("dog_laugh", _build(DOG_LAUGH, PALETTE, DOG_SCALE)),
-        "dog_catch": load("dog_catch", _build(DOG_CATCH, PALETTE, DOG_SCALE)),
+        "dog_laugh": load("dog_laugh", _build(DOG_LAUGH, PALETTE, dog_scale)),
+        "dog_catch": load("dog_catch", _build(DOG_CATCH, PALETTE, catch_scale_px)),
     }
 
 
@@ -377,6 +452,17 @@ class PygameFrontend:
     def run(self, source=None) -> None:
         import pygame
 
+        # Fullscreen without a Space of its own: SDL makes the window
+        # borderless, puts it on the display and raises it over the menu bar,
+        # instead of handing it to macOS's native fullscreen machinery. That
+        # means no half-second Space animation at launch and no separate desktop
+        # in Mission Control, which suits a game you start and stare at. It is
+        # NOT what fixes the window-instead-of-fullscreen bug — see
+        # _open_fullscreen below — it just makes the result instant. Has to be
+        # set before the video subsystem comes up; setdefault leaves it yours to
+        # override from the shell.
+        os.environ.setdefault("SDL_VIDEO_MAC_FULLSCREEN_SPACES", "0")
+
         pygame.init()
         assets_dir = os.path.join(os.path.dirname(__file__), "..", "..", "assets")
         settings = self.world.settings
@@ -391,7 +477,16 @@ class PygameFrontend:
         # pixel art. So in fullscreen it is letterboxed whole and black bars are
         # left at the edges: the scene is drawn into a separate `screen` surface,
         # which present() blits into the centre of the display.
-        info = pygame.display.Info()
+        # Which monitor. The old code asked set_mode for "the desktop size" and
+        # took whatever display SDL picked, while the windowed branch sized
+        # itself from Info() — and on a two-monitor Mac those are not the same
+        # display, so the two branches disagreed. [scene] display settles it.
+        desktops = pygame.display.get_desktop_sizes()
+        want_display = self.world.settings.scene.display
+        if want_display >= len(desktops):
+            print(f"[scene] display {want_display}: only {len(desktops)} "
+                  f"connected — letting SDL choose")
+            want_display = -1
         bw, bh = backgrounds[bg_index]["image"].get_size() if backgrounds else (300, 225)
         # [scene] scale asks for a picture smaller than fits — the light gun's
         # distance knob (a smaller beacon rectangle can be seen from closer up),
@@ -400,7 +495,7 @@ class PygameFrontend:
         wanted = self.world.settings.scene.scale
         fit = self.world.settings.scene.fit
         if self.world.settings.scene.fullscreen:
-            display = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            display = _open_fullscreen(pygame, want_display, desktops)
             sw, sh = display.get_size()
             fits = max(1, min(sw // bw, sh // bh))
             if fit == "height" and wanted <= 0:
@@ -419,10 +514,12 @@ class PygameFrontend:
             offset = ((sw - W) // 2, (sh - H) // 2)
             screen = pygame.Surface((W, H))
         else:
-            fits = max(1, min(info.current_w // bw, (info.current_h - 120) // bh))
+            dw, dh = desktops[max(0, want_display)]
+            fits = max(1, min(dw // bw, (dh - 120) // bh))
             k = min(wanted, fits) if wanted > 0 else max(2, min(4, fits))
             W, H = bw * k, bh * k
-            display = pygame.display.set_mode((W, H))
+            display = (pygame.display.set_mode((W, H)) if want_display < 0
+                       else pygame.display.set_mode((W, H), display=want_display))
             sw, sh = W, H
             offset = (0, 0)
             screen = display
@@ -432,6 +529,9 @@ class PygameFrontend:
         # [gun] frame = "picture", and the number to check after changing the
         # display or its resolution (the pixel-art scale is a whole number, so the
         # picture changes size in steps and the beacons have to follow).
+        print(f"display {want_display if want_display >= 0 else 'auto'} of "
+              f"{len(desktops)} connected {desktops} — using {sw}x{sh}"
+              f"{'' if self.world.settings.scene.fullscreen else ' (windowed)'}")
         print(f"picture {W}x{H} px at {offset[0]},{offset[1]} of {sw}x{sh} "
               f"({100*W/sw:.0f}% x {100*H/sh:.0f}% of the display, "
               f"{'fit to height' if W * bh != H * bw or H % bh else f'scale {k}x'}"
@@ -647,15 +747,32 @@ class PygameFrontend:
         # the countdown digit: as big as the picture can carry, so it reads from
         # across the room with a gun in your hands
         huge = pygame.font.SysFont("Menlo,monospace", max(60, H // 4), bold=True)
+        # the keymap is eight rows wide, so it is measured to fit rather than set
+        # at a fixed size — and it has to fit inside the score panel too (0.86 W)
+        km_font = _fit_font(pygame, KEYMAP, int(W * 0.80))
         # pre-render the sprites: first look for frames sliced out of the sprite
         # sheet (assets/sprites/), otherwise individual PNGs or the built-in pixel
         # art. The sprite is scaled to the duck size from the settings.
         duck_px_w = int(self.world.settings.duck.width * W)
-        art = _load_sheet(pygame, assets_dir, duck_px_w) \
-            or _load_fallback(pygame, assets_dir)
+        # The dog is sized the same way as everything else — a fraction of the
+        # picture ([dog] width) — so it is the same dog on a 27" monitor and on a
+        # 55" TV, where it used to be a fixed 150 px that shrank as the picture
+        # grew.
+        dog_px_w = int(settings.dog.width * W)
+        art = _load_sheet(pygame, assets_dir, duck_px_w, dog_px_w,
+                          settings.dog.catch_scale) \
+            or _load_fallback(pygame, assets_dir, dog_px_w, settings.dog.catch_scale)
         dog_walk = art["dog_walk"]
         dog_catch = art["dog_catch"]
         dog_laugh = art["dog_laugh"]
+
+        # ---- the dog's band: the bottom [dog] band of the picture, and nothing
+        # above it. DOG_TOP is the highest any dog pixel may reach (the pop-up
+        # tops out exactly there), DOG_FEET is where it stands — a little above
+        # the picture's bottom edge, so the paws sit in the grass rather than on
+        # the very last row.
+        DOG_TOP = int(H * (1.0 - settings.dog.band))
+        DOG_FEET = H - max(1, int(H * settings.dog.band * 0.06))
 
         def use_background(i):
             """The background scaled to the window, plus the grass line the dog walks."""
@@ -676,7 +793,43 @@ class PygameFrontend:
             img = glyphs.render(text, True, color)
             screen.blit(img, (W // 2 - img.get_width() // 2, y))
 
-        def draw_results(mode, name_buf, table):
+        def draw_keymap(y, key_ink=(255, 225, 90), text_ink=(225, 225, 225),
+                        shade=False):
+            """The controls in two columns: the keys right-aligned in one, what
+            they do left-aligned in the other, and the pair of columns centred as
+            a block. (Not both columns hung off the picture's centre line — the
+            wording is longer than the key names, so that throws the block to the
+            right and runs the longest row off the edge.) Returns the y it
+            finished at."""
+            gap = max(4, W // 200)
+            keys = [km_font.render(k, True, key_ink) for k, _ in KEYMAP]
+            acts = [km_font.render(a, True, text_ink) for _, a in KEYMAP]
+            kw = max(i.get_width() for i in keys)
+            aw = max(i.get_width() for i in acts)
+            x0 = (W - (kw + 2 * gap + aw)) // 2
+            if shade:
+                # the title screen has no panel under it, and grey-on-tree is
+                # not something you read from across the room
+                pad = max(6, W // 100)
+                box = pygame.Surface(
+                    (kw + 2 * gap + aw + 2 * pad,
+                     len(keys) * (km_font.get_height() + 2) + 2 * pad - 2),
+                    pygame.SRCALPHA)
+                box.fill((0, 0, 0, 150))
+                screen.blit(box, (x0 - pad, y - pad))
+            for k, a in zip(keys, acts):
+                screen.blit(k, (x0 + kw - k.get_width(), y))
+                screen.blit(a, (x0 + kw + 2 * gap, y))
+                y += km_font.get_height() + 2
+            return y
+
+        def draw_dog_walking(x, t):
+            """The dog trotting along the grass, inside its band."""
+            frame = dog_walk[int(t * 8) % len(dog_walk)]
+            # its paws stand on DOG_FEET, but it never rises above the band
+            screen.blit(frame, (x, max(DOG_TOP, DOG_FEET - frame.get_height())))
+
+        def draw_results(mode, name_buf, table, aborted):
             """The round result, the high-score name entry and the best-scores table."""
             w = self.world
             panel = pygame.Surface((int(W * 0.86), int(H * 0.84)), pygame.SRCALPHA)
@@ -689,7 +842,14 @@ class PygameFrontend:
             y += big.get_height() + 6
             draw_center(f"{w.shots} shots  ·  {w.accuracy:.0f}% accuracy  "
                         f"·  {w.elapsed:.0f}s", font, y)
-            y += font.get_height() + int(H * 0.045)
+            y += font.get_height() + 4
+            if aborted:
+                # stopped with ESC: say so, because "12 of 100" otherwise reads
+                # like a bad round rather than a short one
+                draw_center(f"STOPPED EARLY — {w.released} of {w.total} ducks "
+                            "were let out", font, y, (255, 170, 120))
+                y += font.get_height()
+            y += int(H * 0.035)
 
             if mode == "name":
                 draw_center("NEW HIGH SCORE — TYPE YOUR NAME, THEN ENTER", font, y,
@@ -713,16 +873,30 @@ class PygameFrontend:
                 draw_center(line, font, y, (255, 225, 90) if mine else (245, 245, 245))
                 y += font.get_height() + 2
 
-            footer = ("ENTER — SAVE   ·   ESC — SKIP" if mode == "name"
-                      else "SPACE — PLAY AGAIN   ·   Q — QUIT")
-            draw_center(footer, font,
-                        py + panel.get_height() - font.get_height() - int(H * 0.03),
-                        (200, 200, 200))
+            if mode == "name":
+                draw_center("ENTER — SAVE   ·   ESC — SKIP", font,
+                            py + panel.get_height() - font.get_height() - int(H * 0.03),
+                            (200, 200, 200))
+                return
+            # The same keymap as the title screen, under the same rule: the
+            # round ends where the player is standing, not where the keyboard is.
+            # The trigger is listed first because it is what starts the next one.
+            y += int(H * 0.03)
+            block = len(KEYMAP) * (km_font.get_height() + 2)
+            bottom = py + panel.get_height() - int(H * 0.03) - block
+            draw_center("TRIGGER OR SPACE — BACK TO THE TITLE SCREEN", font,
+                        max(y, bottom) - font.get_height() - 6, (255, 225, 90))
+            draw_keymap(max(y, bottom))
 
-        # scene state: intro -> play -> name (name entry) -> over (score table)
+        # scene state: intro -> ready (countdown) -> play -> name (name entry)
+        # -> over (score table) -> intro again. Every round starts from the title
+        # screen and waits for a trigger there, whether it is the first of the
+        # session or the fifth — "play again" must not be one pull away from a
+        # countdown that has already started.
         mode = "intro"
         t_mode = 0.0
-        dog_x = -60.0
+        DOG_START_X = -float(dog_walk[0].get_width())
+        dog_x = DOG_START_X
         name_buf = ""
         gun = settings.gun
         gun_is_picture = gun.frame == "picture"
@@ -764,6 +938,15 @@ class PygameFrontend:
                         mode = "over"            # changed their mind — do not save
                     elif e.unicode.strip() and len(name_buf) < scores.NAME_MAX:
                         name_buf += e.unicode
+                elif e.key == pygame.K_ESCAPE and mode in ("ready", "play"):
+                    # Stop the round where it is and go to the result, with what
+                    # has been shot so far offered to the table — a hundred ducks
+                    # is a long way to be stuck when the arm gets tired, and
+                    # quitting the game outright would throw the score away.
+                    self.world.stop()
+                    mode = ("name" if scores.qualifies(table, self.world.hits,
+                                                       self.world.shots) else "over")
+                    t_mode = 0.0
                 elif e.key in (pygame.K_ESCAPE, pygame.K_q):
                     running = False
                 elif e.key == pygame.K_k:
@@ -788,7 +971,7 @@ class PygameFrontend:
                     mode, t_mode = "ready", 0.0
                 elif e.key == pygame.K_SPACE and mode == "over":
                     self.world = World(settings=settings)   # a new round
-                    mode, t_mode, dog_x, name_buf = "ready", 0.0, -60.0, ""
+                    mode, t_mode, dog_x, name_buf = "intro", 0.0, DOG_START_X, ""
                     last_landed = last_escaped = 0
                     pop_kind = None
 
@@ -837,33 +1020,36 @@ class PygameFrontend:
             if fire and mode == "intro":
                 mode, t_mode, fire = "ready", 0.0, False
             elif fire and mode == "over":
+                # back to the title screen, not straight into the countdown: the
+                # pull that dismisses the score table is the one you make while
+                # still looking at it, and it must not also be the pull that
+                # starts the next round
                 self.world = World(settings=settings)
-                mode, t_mode, dog_x, name_buf, fire = "ready", 0.0, -60.0, "", False
+                mode, t_mode, dog_x, name_buf, fire = "intro", 0.0, DOG_START_X, "", False
                 last_landed = last_escaped = 0
                 pop_kind = None
 
             # ---- intro: the dog walks and sniffs ----
             if mode == "intro":
                 draw_background()
-                dog_x += 120 * dt
-                # the title screen now waits for the trigger however long that
-                # takes, so the dog walks the field on a loop instead of once
+                dog_x += settings.dog.speed * W * dt
+                # the title screen waits for the trigger however long that takes,
+                # so the dog walks the field on a loop instead of once
                 if dog_x > W:
-                    dog_x = -60.0
-                frame = dog_walk[int(t_mode * 8) % len(dog_walk)]
-                # the paws sit inside the grass band, not on its top edge
-                feet = GRASS_Y + int((H - GRASS_Y) * 0.8)
-                screen.blit(frame, (dog_x, feet - frame.get_height()))
-                msg = big.render("DUCK HUNT", True, (255, 255, 255))
-                screen.blit(msg, (W // 2 - msg.get_width() // 2, 120))
+                    dog_x = DOG_START_X
+                draw_dog_walking(dog_x, t_mode)
+                y = int(H * 0.08)
+                draw_center("DUCK HUNT", big, y)
+                y += big.get_height() + int(H * 0.02)
                 # blink it, so it reads as "waiting for you" rather than "stuck"
                 if int(t_mode * 2) % 2:
-                    call = big.render("PULL THE TRIGGER TO START", True, (255, 225, 90))
-                    screen.blit(call, (W // 2 - call.get_width() // 2, 180))
-                hint = (f"{self.world.total} DUCKS  ·  A HIDES THE CROSSHAIR  ·  "
-                        "HOME TOGGLES THE KEEP-ALIVE  ·  Q QUIT")
-                sub = font.render(hint, True, (255, 255, 240))
-                screen.blit(sub, (W // 2 - sub.get_width() // 2, 180 + big.get_height() + 10))
+                    draw_center("PULL THE TRIGGER TO START", big, y, (255, 225, 90))
+                y += big.get_height() + int(H * 0.02)
+                draw_center(f"{self.world.total} DUCKS  ·  "
+                            f"{settings.round.countdown:g}s COUNTDOWN", font, y,
+                            (255, 255, 240))
+                y += font.get_height() + int(H * 0.03)
+                draw_keymap(y, shade=True)
                 draw_crosshair()
                 present()
                 continue
@@ -871,10 +1057,10 @@ class PygameFrontend:
             # ---- ready: the countdown, gun already up ----
             if mode == "ready":
                 draw_background()
-                dog_x += 120 * dt
-                frame = dog_walk[int(t_mode * 8) % len(dog_walk)]
-                feet = GRASS_Y + int((H - GRASS_Y) * 0.8)
-                screen.blit(frame, (dog_x, feet - frame.get_height()))
+                dog_x += settings.dog.speed * W * dt
+                if dog_x > W:
+                    dog_x = DOG_START_X
+                draw_dog_walking(dog_x, t_mode)
                 left = settings.round.countdown - t_mode
                 if left <= 0:
                     mode, t_mode = "play", 0.0
@@ -893,7 +1079,7 @@ class PygameFrontend:
             # ---- round results and the high-score table ----
             if mode in ("name", "over"):
                 draw_background()
-                draw_results(mode, name_buf, table)
+                draw_results(mode, name_buf, table, self.world.stopped)
                 present()
                 continue
 
@@ -924,7 +1110,7 @@ class PygameFrontend:
             last_escaped = self.world.escaped
             if pop_kind is not None:
                 pop_t += dt
-                if pop_t > 1.4:
+                if pop_t > settings.dog.pop:
                     pop_kind = None
 
             draw_background()
@@ -943,11 +1129,14 @@ class PygameFrontend:
             # the dog (pops up out of the grass)
             if pop_kind is not None:
                 spr = dog_catch if pop_kind == "catch" else dog_laugh
-                # an arc: rises out of the grass and drops back down (0->1->0)
-                up = 1.0 - abs(pop_t / 0.7 - 1.0)
+                # An arc inside the dog's band: it comes up from below the
+                # picture's bottom edge and at the top of the arc its head just
+                # reaches DOG_TOP — the band's ceiling — then it drops back out
+                # of sight (0->1->0 over [dog] pop seconds).
+                up = 1.0 - abs(pop_t / (settings.dog.pop / 2) - 1.0)
                 up = max(0.0, min(1.0, up))
-                dy = int(spr.get_height() * up)
-                screen.blit(spr, (W // 2 - spr.get_width() // 2, GRASS_Y - dy))
+                top = H - int(up * (H - DOG_TOP))
+                screen.blit(spr, (W // 2 - spr.get_width() // 2, top))
 
             for m in marks:
                 m["t"] += dt

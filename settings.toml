@@ -9,13 +9,17 @@
 # second. That is why the same numbers work the same in a window, in fullscreen
 # and in the terminal.
 #
+# Every key below has a comment saying what it does — nothing here is a magic
+# number you have to read the source for.
+#
 # The file can be deleted — these same values are then used as defaults.
 # A different set: python3 main.py --pygame --settings hard.toml
 
 [round]
 # A round is `ducks` ducks; when the flock is gone you get the result and the
 # high-score table (scores.json). Round length ≈ ducks × interval, i.e. about a
-# minute for 100 × 0.6.
+# minute for 100 × 0.6. ESC stops a round early and still offers the result to
+# the table, so a long round is not a trap.
 ducks = 100           # ducks per round
 interval = 0.6        # pause between launches, seconds
 
@@ -23,10 +27,11 @@ points = 1            # points per duck downed: 1 point = 1 duck
 speedup = 1.0         # 1.0 — a steady pace all round; 0.99 — speeds up towards the end
 min_interval = 0.5    # the pace stops growing once the pause gets this short
 
-# The round no longer starts by itself: the intro waits for the trigger (SPACE
-# works too), and then this many seconds count down before the first duck — time
-# to get the gun up and settled. 0 starts immediately.
-countdown = 5.0
+# Seconds counted down between "start" and the first duck — time to get the gun
+# up and settled. Every round begins the same way: the title screen waits for the
+# trigger (SPACE works too), then this counts down, and that is true of the first
+# round of the session and of every "play again" after it. 0 starts immediately.
+countdown = 3.0
 
 [duck]
 # Duck size. This is both the hitbox (used for hit detection) and the sprite size:
@@ -38,11 +43,45 @@ height = 0.16         # height, fraction of screen height
 
 # Flight speed: each duck gets a random value between min and max.
 # 0.30–0.55 means a duck crosses the screen in 2–3 seconds (for a one-minute round).
-speed_min = 0.30      # fraction of screen per second
-speed_max = 0.55
+speed_min = 0.30      # slowest a duck may be, fraction of screen per second
+speed_max = 0.55      # and the fastest
 
 bob = 0.12            # vertical drift, ± fraction of screen per second
-fall_speed = 0.7      # how fast a downed duck falls
+fall_speed = 0.7      # how fast a downed duck falls, fraction of screen per second
+
+# The strip the ducks fly in, measured from the TOP of the picture: 0.90 keeps
+# them in the top 90 %, so the bottom tenth — the grass, where the dog is — stays
+# clear. Ducks are launched inside this strip and bounce off its lower edge the
+# same way they bounce off the top. It has to be taller than one duck (`height`
+# above), or the whole picture is used instead.
+sky = 0.90
+
+[dog]
+# The dog: the one that trots about on the title screen, brings back what you hit
+# and laughs at what you miss.
+#
+# Its size is a fraction of the picture, like everything else here, so it keeps
+# its proportions on a 27" monitor and on a 55" TV alike — it used to be a fixed
+# 150 px, which is why it shrank as the picture grew. 0.12 is half again the size
+# it came out at on a 1440p screen before.
+width = 0.12          # dog width, fraction of screen width
+
+# The bottom strip of the picture the dog is allowed in: 0.20 = the bottom fifth.
+# It walks inside that band, and when it pops up out of the grass its head just
+# reaches the band's top edge and no higher — so it never climbs into the ducks'
+# sky. Together with [duck] sky above, this is what keeps the two apart.
+band = 0.20
+
+speed = 0.12          # how fast it walks the title screen, fraction of screen per second
+pop = 1.4             # how long one pop-up (catch or laugh) lasts, seconds
+
+# The dog that comes up out of the grass holding the ducks you shot, relative to
+# `width` above: 1.2 = a fifth larger than the one walking the title screen. It
+# is the reward for hitting something, so it reads better a little bigger. The
+# dog that laughs at a miss stays at `width` — that one needs no help being
+# noticed. It still may not leave the band: at the top of its arc its head
+# reaches the band's ceiling and no further.
+catch_scale = 1.2
 
 [scene]
 # Background: a name from assets/backgrounds/index.toml — meadow (a tree, blue
@@ -55,6 +94,18 @@ background = "meadow"
 # by a whole number of times, so black bars are left at the edges — an NES picture
 # cannot be stretched across a wide monitor without warping the pixels anyway.
 fullscreen = true
+
+# Which monitor to open on, counting from 0. SDL lists displays in its own order,
+# and that order changes when one is plugged in or wakes from sleep, so leaving
+# it to chance means the game sometimes comes up on the laptop and sometimes on
+# the TV. -1 = let SDL choose, as it always did. The game prints the display it
+# used and the sizes of all of them at startup:
+#
+#   display auto of 2 connected [(1470, 956), (1920, 1080)] — using 1920x1080
+#
+# so read the number off that line and put it here to pin it. With a light gun
+# this is worth pinning: the beacons are taped to one particular screen.
+display = -1
 
 # How the picture is fitted to the screen:
 #   "height"  — as tall as the screen, aspect kept, bars on the sides only. The
@@ -134,7 +185,7 @@ frame = "display"
 #
 #   .venv/bin/python tools/ir_view.py --bezel 5 5 10 5 --diagonal 27
 #                                   # top right bottom left, in mm, on that screen
-beacon_w = 1.017
-beacon_h = 1.045
-beacon_cx = 0.5
-beacon_cy = 0.507
+beacon_w = 1.017      # beacon rectangle width, in widths of the frame above
+beacon_h = 1.045      # its height, in heights of that frame
+beacon_cx = 0.5       # its centre across, as a fraction of that frame
+beacon_cy = 0.507     # its centre down, as a fraction of that frame
