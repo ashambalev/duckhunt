@@ -82,16 +82,26 @@ class World:
             self.spawn_interval = max(rnd.min_interval,
                                       self.spawn_interval * rnd.speedup)
 
-        # a shot — down the first flying duck under the crosshair
+        # A shot downs the flying duck NEAREST the crosshair, if any is within the
+        # shot's radius ([gun] spread) — the frontend draws the crosshair at that
+        # same radius, so the circle on screen is the hit zone. Nearest rather
+        # than first in the list, because with a radius two ducks can be in range
+        # at once and the one you were aiming at is the closer one.
         if fire:
             self.shots += 1
+            radius = self.settings.gun.spread
+            best, best_d = None, None
             for d in self.ducks:
-                if d.state is DuckState.FLYING and d.contains(aim_x, aim_y):
-                    d.state = DuckState.FALLING
-                    d.vx = 0.0
-                    self.hits += 1
-                    self.score += self.settings.round.points
-                    break
+                if d.state is not DuckState.FLYING:
+                    continue
+                dist = d.distance_to(aim_x, aim_y)
+                if dist <= radius and (best_d is None or dist < best_d):
+                    best, best_d = d, dist
+            if best is not None:
+                best.state = DuckState.FALLING
+                best.vx = 0.0
+                self.hits += 1
+                self.score += self.settings.round.points
 
         # physics
         for d in self.ducks:

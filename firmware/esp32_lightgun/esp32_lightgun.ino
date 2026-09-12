@@ -5,7 +5,8 @@
  * Sensor   : PixArt IR camera (DFRobot Positioning IR Camera SEN0158 /
  *            PAJ7025 chip — the same one as in the Wiimote). Reports up to 4
  *            bright IR dots over I2C (X: 0..1023, Y: 0..767).
- * Beacons  : 4 940 nm IR LEDs at the corners of the Mac's screen.
+ * Beacons  : 4 940 nm IR LEDs on the corners of the rectangle being aimed at —
+ *            the game's picture by default, see [gun] in settings.toml.
  * Trigger  : a microswitch on a GPIO (INPUT_PULLUP).
  *
  * Serial output, one line per frame:   x,y,b\n

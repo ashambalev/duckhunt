@@ -17,7 +17,7 @@ that you can quit from the keyboard even while playing with the gun.
 
 from __future__ import annotations
 
-from .base import AimState, InputSource
+from .base import AimState, GunStats, InputSource
 
 try:
     import serial  # pyserial
@@ -49,12 +49,20 @@ class SerialGunInput(InputSource):
         self._x = 0.5
         self._y = 0.5
         self._btn_prev = 0  # for edge-detecting the shot
+        self.stats = GunStats()
+        self._hushed = False   # have we asked the bridge to stop its dot dumps
+        # The bridge's own '#' lines, kept rather than dropped: "# New remote,
+        # authenticating..." in the middle of a round is a link drop, which is
+        # the difference between "the gun lags" and "the gun stopped for a
+        # second". The frontend drains this into the --log-gun log.
+        self.statuses = []
 
     def poll(self) -> AimState:
         fire = False
+        pressed = 0
 
         # Drain the port buffer completely (not just 4096 B) so that latency does
-        # not build up: take exactly what has arrived and handle the last line.
+        # not build up: take exactly what has arrived, and read all of it below.
         try:
             n = self._ser.in_waiting
             if n:
@@ -62,28 +70,47 @@ class SerialGunInput(InputSource):
         except Exception:
             pass
 
-        line = None
+        # EVERY line gets looked at, not just the freshest one. The position
+        # only needs the newest value, but the trigger is an EDGE: at 60-70
+        # reports a second against 60 frames, a quick pull can begin and end
+        # inside one frame's worth of lines, and keeping only the last line threw
+        # that shot away — which is what made fast shooting drop hits. The aim
+        # still ends up being the last line's, because each one overwrites it.
         while b"\n" in self._buf:
             raw, self._buf = self._buf.split(b"\n", 1)
             raw = raw.strip()
-            # The bridge also reports its beacon count on this port; skipping the
-            # '#' lines here keeps the freshest *aim* line, not the freshest line.
+            # The bridge also reports its beacon count on this port; the '#'
+            # lines are status, not aim.
             if raw.startswith(b"#"):
+                if len(self.statuses) < 200:      # a round cannot say more
+                    self.statuses.append(raw.decode("ascii", "replace"))
                 continue
-            line = raw
+            parsed = self._parse(raw)
+            if parsed is None:
+                continue
+            nx, ny, btn = parsed
+            pressed |= btn & ~self._btn_prev        # every button's rising edge
+            if nx >= 0:  # beacons visible — update the position
+                self._x, self._y = nx, ny
+            # fire on the rising edge of the trigger (0 -> 1)
+            if (btn & 1) and not (self._btn_prev & 1):
+                fire = True
+            self._btn_prev = btn
+            self.stats.report(blind=nx < 0)
+            if not self._hushed:
+                # The bridge also dumps its raw dots on this port, twice a second
+                # by default and on EVERY report if a tool left it in 'd' mode.
+                # At 115200 a dump line is ~5 ms of port time that the next aim
+                # line waits behind, so hush it now that the aim is flowing ('o'
+                # is the bridge's own command; it comes back at the next reset).
+                self._hushed = True
+                try:
+                    self._ser.write(b"o")
+                except Exception:
+                    pass
 
-        if line:
-            parsed = self._parse(line)
-            if parsed is not None:
-                nx, ny, btn = parsed
-                if nx >= 0:  # beacons visible — update the position
-                    self._x, self._y = nx, ny
-                # fire on the rising edge of the trigger (0 -> 1)
-                if (btn & 1) and not (self._btn_prev & 1):
-                    fire = True
-                self._btn_prev = btn
-
-        return AimState(x=self._x, y=self._y, fire=fire)
+        return AimState(x=self._x, y=self._y, fire=fire,
+                        buttons=self._btn_prev, pressed=pressed)
 
     @staticmethod
     def _parse(line: bytes):
@@ -97,6 +124,15 @@ class SerialGunInput(InputSource):
         nx = min(1.0, max(0.0, xi / 1000.0))
         ny = min(1.0, max(0.0, yi / 1000.0))
         return nx, ny, btn
+
+    def command(self, ch: str) -> bool:
+        """Send one of the bridge's single-character commands ('r' toggles the
+        recoil, 'o'/'s'/'d' the dot dump). True if it went out."""
+        try:
+            self._ser.write(ch.encode("ascii")[:1])
+            return True
+        except Exception:
+            return False
 
     def close(self) -> None:
         try:

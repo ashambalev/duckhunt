@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import socket
 
-from .base import AimState, InputSource
+from .base import AimState, GunStats, InputSource
 
 DEFAULT_PORT = 4210
 
@@ -33,12 +33,17 @@ class UdpGunInput(InputSource):
         self._x = 0.5
         self._y = 0.5
         self._btn_prev = 0                # for edge-detecting the shot
+        self.stats = GunStats()
 
     def poll(self) -> AimState:
         fire = False
-        line = None
+        pressed = 0
 
-        # Take every datagram that has piled up, keep the freshest one.
+        # Every datagram that has piled up gets looked at, not just the freshest:
+        # the position only wants the newest value, but the trigger is an EDGE,
+        # and a quick pull can start and finish inside one frame's worth of
+        # packets. Keeping only the last packet threw those shots away. (Same
+        # reasoning, same fix as in serial_gun.py.)
         while True:
             try:
                 data, _addr = self._sock.recvfrom(64)
@@ -46,20 +51,22 @@ class UdpGunInput(InputSource):
                 break
             except OSError:
                 break
-            if data:
-                line = data.strip()
+            if not data:
+                continue
+            parsed = self._parse(data.strip())
+            if parsed is None:
+                continue
+            nx, ny, btn = parsed
+            pressed |= btn & ~self._btn_prev        # every button's rising edge
+            if nx >= 0:                    # dots visible — update the aim
+                self._x, self._y = nx, ny
+            if (btn & 1) and not (self._btn_prev & 1):  # trigger rising edge
+                fire = True
+            self._btn_prev = btn
+            self.stats.report(blind=nx < 0)
 
-        if line:
-            parsed = self._parse(line)
-            if parsed is not None:
-                nx, ny, btn = parsed
-                if nx >= 0:                    # dots visible — update the aim
-                    self._x, self._y = nx, ny
-                if (btn & 1) and not (self._btn_prev & 1):  # trigger rising edge
-                    fire = True
-                self._btn_prev = btn
-
-        return AimState(x=self._x, y=self._y, fire=fire)
+        return AimState(x=self._x, y=self._y, fire=fire,
+                        buttons=self._btn_prev, pressed=pressed)
 
     @staticmethod
     def _parse(line: bytes):

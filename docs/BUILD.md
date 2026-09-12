@@ -19,10 +19,10 @@ screen). Use **HDMI**, not AirPlay, to avoid input lag.
 | 1 | MCU board | **ESP32-S3** dev board (native USB, e.g. ESP32-S3-DevKitC-1 / Seeed XIAO ESP32-S3) | 1 | Native USB = shows up as `/dev/tty.usbmodem*` on Mac | you have it |
 | 2 | IR position camera | **PixArt IR camera** — DFRobot "Positioning IR Camera" (SEN0158) or a salvaged Wii Remote camera (PAJ7025R2) | 1 | Outputs up to 4 IR blob coordinates over I²C (addr `0x58`) | $25–40 |
 | 3 | Trigger switch | Momentary **micro switch** (SPDT lever, e.g. Omron D2F / "arcade microswitch") | 1 | Wired to a GPIO with internal pull-up | $1 |
-| 4 | IR LEDs (beacons) | **940 nm** IR LED, 5 mm, wide angle (IR333C / TSAL6100 / SFH 4544) | 4 (min) / 8 (better) | Mounted at the 4 screen corners; sand tips flat to widen beam | $0.20 ea |
-| 5 | Resistors for LEDs | **100–120 Ω**, 1/4 W | 4–8 | One per IR LED — sized for the **3 V** corner modules (see wiring) | $0.05 ea |
+| 4 | IR LEDs (beacons) | **940 nm** IR LED, 5 mm (IR333C / TSAL6100 / SFH 4544) | **12** | **Three per corner**, taped into one bundle; sand tips flat to widen the beam and help them merge | $0.20 ea |
+| 5 | Resistors for LEDs | **100 Ω**, 1/4 W | **12** | One per LED — **never one shared resistor per bundle** (see wiring) | $0.05 ea |
 | 5a | Battery holder for beacons | **2×AAA with a switch** | 4 | One per corner: each beacon is standalone, no wiring between them | $1.75 ea |
-| 5b | AAA batteries | alkaline | 8 | 60+ h of play per set | $0.50 ea |
+| 5b | AAA batteries | alkaline | 8 | ~15 h of play per set (56 mA per corner) | $0.50 ea |
 | 6 | USB-C data cable | Good quality **data** cable (not charge-only) | 1 | Gun → Mac; also powers the ESP32 | $5 |
 | 7 | Hook-up wire | 24–26 AWG stranded, a few colors | small roll | Internal wiring | $5 |
 
@@ -84,89 +84,229 @@ Notes:
 gun or the Mac in any way. Like a Wii sensor bar, they just emit IR light toward the
 player; the gun's camera *sees* them optically. Beacons need **power only**.
 
-Four 940 nm IR LEDs, one at each screen/TV corner, defining the aiming rectangle.
-Minimum is 4 points (corners) for a clean 4-corner homography; two LEDs (a top bar
-only) works but calibrates less accurately.
+Four IR beacons, one at each screen/TV corner, define the aiming rectangle. The
+homography needs all four dots at once, so four is a hard minimum — there is no
+useful three-beacon mode.
+
+**Each beacon is a bundle of three LEDs, not one.** A single 940 nm LED at its rated
+20 mA is too dim for this camera: the first builds here measured blob sizes of
+0.17 / 0.50 / 0.99 / 1.84 out of 15, and beacons that faint drop out of the frame
+constantly. Overdriving one LED is the wrong fix — an LED's efficiency droops as the
+current climbs, so 35 mA buys perhaps 65% more light than 20 mA while running 75%
+over the datasheet rating. Three LEDs at 20 mA each give **~1.9× the light of one
+overdriven LED**, with every part inside spec:
+
+| Per corner | Current | Light | Within the 20 mA rating? |
+|---|---|---|---|
+| 1 LED, 100 Ω | 20 mA | 0.67× | yes |
+| 2 LEDs, 82 Ω | 2 × 21 mA | 1.37× | yes |
+| **3 LEDs, 100 Ω** | **3 × 19 mA** | **1.90×** | **yes** |
+
+(Light is relative to one LED at 35 mA, and is modelled from the droop figure above,
+not measured. The ratios are the right order; trust `ir_view.py`'s blob sizes for the
+real answer.) Two LEDs at 82 Ω is the fallback if you are short on parts — but it is
+only ~40% brighter than one, where three nearly doubles it.
 
 **Chosen scheme: four independent 3 V corners.** Each corner is its own tiny module —
-IR LED + resistor + **2×AAA holder with a switch** — clipped to the bezel. No wires
+3 LEDs + 3 resistors + **2×AAA holder with a switch** — clipped to the bezel. No wires
 run across or around the screen, nothing plugs into the TV, and each corner is
 switched off separately when you are done playing.
 
 ```
-  [LED]               [LED]      each corner is standalone:
+  [***]               [***]      each corner is standalone:
     │      SCREEN        │
-    │                    │       bat(+) → switch → resistor → LED(anode)
-  [LED]               [LED]      LED(cathode) → bat(−)        2×AAA = 3 V
+    │                    │            ┌── 100 Ω ──▶|──┐
+  [***]               [***]    bat(+)─┼── 100 Ω ──▶|──┼── bat(−)
+                               2×AAA  └── 100 Ω ──▶|──┘
+   each [***] = 3 LEDs         +switch  three separate   cathodes
+   taped into one bundle                  resistors      twisted together
 ```
 
-- **Resistor for 3 V:** `R = (3V − 1.3V) / 0.015A ≈ 113 Ω` → use **100–120 Ω** for
-  ~14 mA per LED. Do **not** reuse the 180–220 Ω value from a 5 V rail — at 3 V that
-  starves the LED and the camera may not see the dot.
-- **If the camera keeps losing dots, go lower.** The LED is nowhere near its limit
-  (a 5 mm 940 nm part takes 100 mA continuously); what runs out first is the
-  batteries. Currents below account for the LED's forward voltage rising with
-  current:
+- **One resistor per LED — this is the part that bites.** The temptation with a taped
+  bundle is to twist all three anodes into one node and feed them through a single
+  resistor. Do not: a shared resistor limits the *total*, and nothing balances the
+  branches against each other. At the datasheet spread of Vf = 1.2–1.5 V the current
+  divides like this:
 
-  | Resistor | Fresh | Half-drained | Nearly flat | Runtime |
-  |---|---|---|---|---|
-  | 100 Ω | 17 mA | 14 | 12 | ~54 h |
-  | 68 Ω | 25 mA | 20 | 17 | ~38 h |
-  | **47 Ω** | **35 mA** | 27 | 24 | ~27 h |
-  | 33 Ω | 47 mA | 37 | 32 | ~20 h |
-  | 22 Ω | 66 mA | 52 | 45 | ~14 h |
+  | Shared resistor, 3 V | Current per LED |
+  |---|---|
+  | 100 Ω | 16.7 / 1.7 / **0.0** mA |
+  | 47 Ω | 26.0 / 11.0 / **0.0** mA |
+  | 27 Ω | **35.3** / 20.3 / 5.3 mA |
 
-  **47 Ω** is the sweet spot: twice the current, a third of the LED's rating, and
-  still most of a week of evenings per set of cells. Below 33 Ω is not worth it —
-  runtime halves while the light does not keep up, because an LED's efficiency
-  droops as the current climbs. Going 17 → 35 mA buys perhaps 60-70% more light,
-  not double.
-- **Better than a smaller resistor: a third cell.** 3×AAA with 100–120 Ω gives the
-  same 27–32 mA and 30–36 h, and it makes the four corners *match* each other: with
-  only 3 V to play with, two LEDs whose forward voltage differs by 0.2 V end up 11%
-  apart in current, and at 4.5 V that halves to 6%. The uneven corners measured on
-  the first builds are exactly this effect.
-- **Runtime:** 2×AAA at ~14 mA lasts 60+ hours, and the brightness stays flat almost
-  to the end. CR2032 coin cells were considered and rejected: same 3 V, but only
-  ~10–15 h and they sag as they drain.
-- **Sand the LED domes flat** — it diffuses the beam so the camera sees them across
-  a wider angle (IR LEDs are very directional otherwise).
-- Aim the LEDs toward the player's play zone.
+  One LED cooks at 75% over its rating while another does not light at all — and it
+  self-worsens, because the hot LED's Vf falls and it takes even more of the current.
+  Solder each resistor straight onto its own anode leg *before* taping the bundle;
+  then there is physically no room inside for the anodes to touch.
+- **Resistor value: 100 Ω per LED.** On fresh cells (3.2 V) that is 20.0 mA for the
+  lowest-Vf LED of the batch and 17.3 mA for the highest — the whole spread lands
+  inside the rating. After three hours of play (~2.9 V) it is 17.3 / 14.5 mA.
+  Do **not** reuse the 180 Ω value from the 5 V variant below — at 3 V that starves
+  the LED and the camera may not see the dot.
+- **The 16% spread between LEDs in a bundle does not matter.** The camera merges the
+  three into a single blob whose brightness is their *sum*, and the sum is the same
+  however it divides: 20 + 18.5 + 17.3 equals three at 18.6. Mismatch would only
+  matter corner-to-corner, and with one resistor per LED every corner sums to the
+  same ~56 mA. A shared resistor is bad for the overdriving, not the unevenness.
+- **Runtime:** 56 mA per corner on 2×AAA (~900 mAh) is about **15 hours** — a whole
+  evening of play costs a fifth of a set, and the current only sags 20 → 17 mA across
+  it. CR2032 coin cells were considered and rejected: same 3 V, but they cannot hold
+  56 mA at all.
+- **Keep the bundle tight — under ~6 mm between LED centres.** The camera reports at
+  most 4 blobs and `computeAim()` wants exactly the four corners, so three LEDs that
+  resolve as three separate dots do not make a brighter beacon, they break the
+  homography outright. Three 5 mm domes taped body-to-body sit ~5 mm apart, which is
+  what you want:
+
+  | Playing distance | 5 mm bundle spans |
+  |---|---|
+  | 1.4 m | 6.2 px |
+  | 1.7 m | 5.1 px |
+  | 2.9 m | 3.0 px |
+
+  A blob at full IR sensitivity is already wider than that, so they merge. The short
+  end of the range is the risky one — check `n=4` at your *minimum* playing distance,
+  not a comfortable one.
+- **Sand the LED domes flat** — it diffuses the beam so the camera sees the beacon
+  across a wider angle (IR LEDs are very directional otherwise), and with a bundle it
+  does double duty: three blurred sources overlap into one clean blob far more
+  readily than three sharp ones.
+- **All three LEDs parallel, pointing the same way** — domes flush, aimed at the zone
+  where the player stands. Fanning them out for a wider angle is exactly what breaks
+  the merge; get the angle from sanding instead.
+- Electrical tape unwinds and goes sticky as it warms; a short piece of heat-shrink
+  holds the bundle better. Nothing here gets hot, though — 80 mW for the whole bundle.
 - **Check with a phone camera:** a powered 940 nm LED shows up as a pale violet dot on
-  the phone's screen (the naked eye sees nothing).
-- **Check them against each other too.** The camera reports each blob's size, and
-  `tools/ir_view.py` prints the average per corner: four similar numbers mean four
-  similar beacons, and one that sits well below the others has a tired battery, the
-  wrong resistor, or is pointing somewhere other than the play zone. On the first
-  runs here the four came out 0.17 / 0.50 / 0.99 / 1.84 — a set that dim loses dots
-  constantly, and the weakest corner drops out altogether.
+  the phone's screen (the naked eye sees nothing). A finished bundle should read as
+  **one** dot there, not three.
+- **Check the corners against each other too.** The camera reports each blob's size,
+  and `tools/ir_view.py` prints the average per corner: four similar numbers mean four
+  similar beacons, and one that sits well below the others has a tired battery, a
+  resistor on the wrong leg, an LED in backwards, or is pointing somewhere other than
+  the play zone.
 
-#### Where exactly to stick them — the picture is smaller than the screen
+#### Where exactly to stick them — on the picture, not on the screen
 
 The game's pixel art is scaled by a **whole** number and centred, so in fullscreen
-it never fills the display: on this Mac (1470×956 logical) the 256×183 background
-comes out ×5 = **1280×915 at offset (95, 20)** — black bars of 6.5% of the width
-down each side and 2.1% of the height top and bottom. The ducks live inside that
-inner rectangle.
+it never fills the display: the 256×183 background is 1.4:1 and the screen is
+16:9, and the scale can only go up in steps. On a 1440p 27" it comes out ×7 =
+**1792×1281**, which is 70% of the width and 89% of the height; on a 4K 55" ×11 =
+**2816×2013**, 73% × 93%. The game prints the rectangle it chose at startup:
 
-That does **not** change where the LEDs go. Stick them on **the corners of the
-physical screen**, all four with the same inset, and let the software do the rest:
-the firmware reports the aim in *display* fractions, and the pygame frontend
-already converts display → picture (`frontends/pygame_app.py`, the crosshair
-block), so the corner of the picture is where the crosshair reaches its corner.
-Aiming into a black bar just parks the crosshair at the picture's edge.
+```
+picture 1792x1281 px at 384,80 of 2560x1440 (70% x 89% of the display, scale 7x)
+```
 
-`tools/ir_view.py` draws that inner rectangle in its SCREEN panel, so you can see
-what part of your aiming range the ducks actually occupy.
+**Stick the beacons on the corners of that picture** — the rectangle the ducks
+actually fly in — and tell the game so, once, in `settings.toml`:
 
-**If the LEDs cannot sit on the corners** — a bezel too thin to stick to, a TV
-frame that forces them wider, one corner blocked — put them on any rectangle that
-is *centred on the screen and parallel to it*, then tell the firmware what that
-rectangle is, in `BEACON_CX/CY` (its centre, in display fractions) and
-`BEACON_W/H` (its size, in display widths and heights). Tape measure, two
-divisions, done: LEDs spanning 68 cm across a 60 cm-wide screen is
-`BEACON_W = 68/60 = 1.13`. Getting this wrong does not break the aim, it skews it
-by a constant — the crosshair reaches the edge early, or never quite gets there.
+```toml
+[gun]
+frame = "picture"
+```
+
+Turn the game on and put each bundle where the picture's corner really is; no
+tape measure is involved. Three things come out of this for free:
+
+- **The aim needs no calibration per screen.** The firmware reports where the
+  barrel points inside the beacon rectangle, and with the beacons on the picture
+  those numbers *are* playfield coordinates. The same `settings.toml` plays on a
+  27" monitor and on a 55" TV — the beacons move with you, and nothing in the
+  firmware has to be reflashed.
+- **You stand ~30% closer**, because the beacon rectangle is 70% of the display
+  width and the distance follows the beacon width (next section).
+- **Every bit of the sensor's resolution lands on the playfield** instead of on
+  the black bars.
+
+The other wiring, `frame = "display"`, is the original one: beacons on the
+corners of the physical screen, and the game takes the black bars out itself
+(`frontends/pygame_app.py`, `aim_to_picture`). It still works, and aiming into a
+bar parks the crosshair at the picture's edge — but it wants fullscreen (a window
+cannot be corrected, since nothing tells the game where the window sits) and the
+longer playing distance.
+
+Leave the firmware's own `BEACON_CX/CY/W/H` at `0.5/0.5/1.0/1.0` either way: the
+same correction lives in `[gun]` on the Mac side, where changing it does not mean
+a flash.
+
+#### Beacons on the bezel — the other half of the answer
+
+Nothing says the LEDs *can* go on the glass. A bundle of three sanded 5 mm LEDs
+with a battery box behind it wants somewhere to be stuck, and the honest place is
+usually the **bezel**. That is a rectangle slightly *bigger* than the screen, and
+slightly off-centre when the chin is deeper than the top edge — so it is
+`frame = "display"` plus four numbers, and the calculator prints them:
+
+```bash
+.venv/bin/python tools/ir_view.py --bezel 5 5 10 5 --diagonal 27
+#                           top right bottom left, in mm, run on THAT screen
+```
+
+The millimetres are how far outside the screen's own edge each LED bundle's
+centre ends up: a 1 cm bezel above the picture and 2 cm below means ~5 mm and
+~10 mm if the bundles sit in the middle of the bezel. Out comes the block to
+paste:
+
+```toml
+[gun]
+frame = "display"
+beacon_w = 1.017     # 1.7% wider than the screen
+beacon_h = 1.045     # 4.5% taller
+beacon_cx = 0.5
+beacon_cy = 0.507    # the rectangle sits 0.7% of the height low
+```
+
+**Where on the bezel, exactly?** Run `main.py --pygame --align`. In this wiring
+it lights the letterbox bars pale grey and puts **red** brackets in the four
+corners of the *screen* — so the screen's own edge is the line where the light
+stops, which is the thing to line a bundle up with (there is no other way to see
+it while the game is on). Horizontally level with the side edge of the lit area,
+vertically in the middle of the bezel, and that is the position those four
+numbers describe.
+
+What actually matters, in order:
+
+- **A rectangle, not a trapezoid.** The left pair on one vertical, the right pair
+  on another, the top pair on one horizontal, the bottom pair on another. Four
+  numbers can describe any rectangle around the screen; they cannot describe a
+  skew, and a skew goes straight into the aim.
+- **Left/right symmetry** — otherwise the rectangle's centre moves and
+  `beacon_cx` has to say so. Top and bottom may differ freely (1 cm of bezel
+  above and 2 below is exactly what `beacon_cy` is for).
+- **Not the exact size.** Whatever you measure is what `--bezel` turns into
+  fractions, and 1 mm out of 600 is 0.17% of the screen — three pixels.
+- All four in the plane of the screen, domes sanded, pointing into the play zone.
+
+Getting the numbers wrong does not break the aim, it skews it by a constant — the
+crosshair reaches the edge early, or never quite gets there. The same `--align`
+screen also draws thin **blue** brackets on the picture's corners: aim there, and
+the crosshair should sit in the angle of the bracket. Consistently high or low is
+`beacon_cy`; short of the corners in both axes is `beacon_w`/`beacon_h`.
+
+**What the bezel costs is distance,** and this is the trade to understand before
+sticking anything down. The playing distance follows the size of the beacon
+rectangle, and on the bezel that rectangle is the whole screen — so it is the
+2.9 m column below on a 27", not the 2.0 m one, and `[scene] scale` cannot
+shorten it any more (the beacons no longer move with the picture). Beacons on the
+glass at the picture's corners buy the shorter distance; beacons on the bezel buy
+a monitor with nothing stuck to its screen. Both aim exactly as well.
+
+If the bezel is the only option and 2.9 m is too far, the horizontal pair can be
+moved *inwards* along the top and bottom bezel: a narrower rectangle is seen from
+closer up, down to the floor set by its height (the screen's own height is fixed,
+and ~7 x that is where the vertical field of view runs out — about 2.5 m for a
+27"). Then `[scene] scale` has to come down until the picture fits inside that
+narrower rectangle, which `--bezel` works out and tells you. Negative
+millimetres describe those inward positions.
+
+One direction is not allowed: a beacon rectangle **smaller** than the picture.
+The firmware clamps the aim to its own rectangle (0..1000), so aiming past a
+beacon sticks there and the picture's outer band can never be reached. `--bezel`
+checks for this and says which `[scene] scale` fixes it.
+
+`tools/ir_view.py` reads `[gun] frame` too, so its SCREEN panel says what it is
+showing you: the display with the ducks' rectangle inside it, or the picture
+itself.
 
 #### How far back the four corners can be seen from
 
@@ -182,13 +322,22 @@ aim left the middle, 70% spent 45% of its frames down to a single dot.
 the frame; × 3.4 is the bare minimum, and it will drop dots whenever you aim into
 a corner.
 
-| Screen (16:9) | Beacons on its corners | Comfortable | Bare minimum |
-|---|---|---|---|
-| 13.6" MacBook (29 cm wide) | 29 cm | 1.4 m | 1.0 m |
-| 24" (53 cm) | 53 cm | 2.5 m | 1.8 m |
-| 27" (60 cm) | 60 cm | 2.9 m | 2.0 m |
-| 43" (95 cm) | 95 cm | 4.6 m | 3.2 m |
-| 55" (122 cm) | 122 cm | 5.8 m | 4.1 m |
+The frame is narrower vertically (~23° against ~33°), so the same 35% of the
+*height* asks for **× 7.0** — which for any rectangle wider than about 1.5:1 is
+the slacker of the two constraints and can be ignored. It only starts deciding
+the distance once the rectangle has been made narrow on purpose (beacons moved
+inwards along a bezel, say). `tools/ir_view.py --bezel` applies both and names
+the axis that won.
+
+| Screen (16:9) | Beacons on the screen | Comfortable | On the **picture** (~70%) | Comfortable |
+|---|---|---|---|---|
+| 13.6" MacBook (29 cm wide) | 29 cm | 1.4 m | 25 cm | 1.2 m |
+| 24" (53 cm) | 53 cm | 2.5 m | 37 cm | 1.8 m |
+| 27" (60 cm) | 60 cm | 2.9 m | 42 cm | 2.0 m |
+| 43" (95 cm) | 95 cm | 4.6 m | 67 cm | 3.2 m |
+| 55" (122 cm) | 122 cm | 5.8 m | 89 cm | 4.3 m |
+
+(× 3.4 instead of × 4.8 for the bare minimum in either column.)
 
 A monitor is comfortable; a big TV is not, and that is the camera's fault — a
 55" wants most of a room. Below the minimum the gun still works, because the
@@ -201,15 +350,35 @@ buy distance costs almost nothing in noise; what it costs is tolerance, since a
 centimetre of misplaced beacon counts for three times as much on a 40 cm
 rectangle as on a 120 cm one.
 
-If the room cannot give you that distance, move the beacons off the bezel and onto
-a smaller rectangle centred on the screen (a strip of board in front of it, say):
-the maths is identical, and the aim point only has to be rescaled about the centre
-by the ratio of the two widths. A narrower beacon rectangle is seen from closer up.
+**If the room cannot give you that distance, make the picture smaller.** Not the
+beacon rectangle on its own — the firmware's clamp makes an undersized rectangle
+unreachable at the edges (above) — but both together, which is one line:
+
+```toml
+[scene]
+scale = 6        # display pixels per pixel of the art; 0 = as big as fits
+```
+
+Then re-stick the beacons on the smaller picture's corners. Distance scales
+straight down with it: a 4K 55" at `scale = 11` (all it will fit) is an 89 cm
+picture at 4.3 m, at `scale = 6` a 49 cm picture at 2.3 m, at `scale = 4` a 32 cm
+picture at 1.6 m. Nothing else in the game changes — every size and speed is a
+fraction of the picture, so the ducks stay exactly as big and as fast relative to
+it.
+
+What you cannot cheat is the angle. The distance rule says the beacon rectangle
+fills ~35% of a 33° field of view, so the picture always ends up subtending about
+**12°** — the same apparent size on a 27" at 2 m as on a 55" at 4.3 m. With this
+camera a bigger TV buys you nothing unless the room can give back the distance;
+what buys a genuinely bigger picture is a **wider lens** (the PixArt + M12 path in
+`firmware/esp32_lightgun`), not a bigger screen.
 
 *Alternative, if you would rather not have batteries:* run a thin 2-wire lead (5 V +
-GND) along the bezel to all four corners, each LED in series with its own
-**180–220 Ω** resistor (`(5V − 1.3V)/0.02A ≈ 185 Ω`), the whole frame fed from one USB
-plug (TV USB port or a power bank).
+GND) along the bezel to all four corners, all 12 LEDs each with its own
+**180 Ω** resistor (`(5V − 1.35V)/0.02A ≈ 182 Ω`), the whole frame fed from one USB
+plug (TV USB port or a power bank) — 240 mA total. The one-resistor-per-LED rule is
+the same here; 5 V only makes the corners match each other more closely, because the
+Vf spread is a smaller share of the headroom.
 
 ---
 
@@ -221,26 +390,40 @@ plug (TV USB port or a power bank).
    the coordinates should react. This proves the camera + I²C work.
 2. **Wire the trigger.** Micro switch between `GPIO 4` and `GND`. Pressing it should
    flip the last field of the serial line to `1`.
-3. **Build the beacons.** Solder 4 standalone modules (LED + 100–120 Ω resistor +
-   2×AAA holder with a switch), check each one with a phone camera, clip them to the
-   screen corners. Then run `tools/ir_view.py`: it draws the blobs the camera
-   reports and the quad built from them, so you can see all four corners appear —
-   and it logs the run to `logs/` for later reading.
-4. **First play (crosshair ON).** Run `python3 main.py --serial /dev/tty.usbmodemXXXX`.
+3. **Build the beacons.** Solder 4 standalone modules: 3 LEDs, each with its **own**
+   100 Ω resistor on its anode leg, cathodes twisted to one node, plus a 2×AAA holder
+   with a switch. Tape each trio into a tight bundle (≤6 mm between centres), sand the
+   domes, and check with a phone camera that it reads as **one** dot, not three. Clip
+   them to the corners of the game's picture: run `main.py --pygame --align` and
+   tape each bundle into the angle of its bracket — that is the whole calibration,
+   and `tools/ir_view.py --plan --diagonal 27` says beforehand how far back that
+   rectangle puts you. Then run `tools/ir_view.py`: it draws the blobs the
+   camera reports and the quad built from them, so you can see all four corners appear
+   — and it logs the run to `logs/` for later reading. Walk to your *closest* intended
+   playing distance and confirm it still says `n=4`: that is where a loose bundle
+   splits into extra dots.
+4. **Test the aim without the gun first.** `tools/fake_gun.py` sends the bridge's
+   own `x,y,b` stream over UDP, so the Mac side can be checked before any beacon is
+   stuck to anything: `main.py --pygame --udp` in one terminal,
+   `tools/fake_gun.py --fire` in another. With `[gun] frame = "picture"` the
+   crosshair should land exactly on the four corners of the picture and shoot
+   there. Whatever is wrong at this point is in `settings.toml`, not in the
+   hardware.
+5. **First play (crosshair ON).** Run `python3 main.py --serial /dev/tty.usbmodemXXXX`.
    Keep the on-screen crosshair visible — it's your calibration debug tool. Aim and
    watch where the `+` lands vs. where the barrel points.
-5. **Check the aim mapping.** `computeAim()` in the bridge firmware already solves
+6. **Check the aim mapping.** `computeAim()` in the bridge firmware already solves
    the 4-corner homography — no calibration routine is needed, the four beacons
    *are* the calibration. What does need confirming once on real hardware is the
    two axis flags at the top of the file (`CAM_MIRROR_X`, `CAM_MIRROR_Y`): if the
    crosshair runs the wrong way when you sweep the gun, flip the matching flag.
-6. **Add recoil (optional).** MOSFET module: gate→`GPIO 5`, drain→solenoid−,
+7. **Add recoil (optional).** MOSFET module: gate→`GPIO 5`, drain→solenoid−,
    solenoid+→+5V supply, source→GND (shared). Fire a short **non-blocking** pulse
    (~50 ms) on trigger — do not use `delay()` in the main loop.
-7. **Go wireless (optional).** Add LiPo + TP4056 + switch, flip firmware from USB
+8. **Go wireless (optional).** Add LiPo + TP4056 + switch, flip firmware from USB
    CDC serial to BLE (same `x,y,b` payload — the game/`serial_gun.py` parser is
    reused).
-8. **Enclosure.** Print the shell, mount camera (clear line of sight out the barrel),
+9. **Enclosure.** Print the shell, mount camera (clear line of sight out the barrel),
    trigger, and boards. Keep the camera lens unobstructed.
 
 ---

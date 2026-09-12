@@ -5,6 +5,7 @@
 #define HCI_GRP_LINK_CONT_CMDS             (0x01 << 10) /* 0x0400 */
 #define HCI_GRP_HOST_CONT_BASEBAND_CMDS    (0x03 << 10) /* 0x0C00 */
 #define HCI_GRP_INFO_PARAMS_CMDS           (0x04 << 10)
+#define HCI_GRP_STATUS_PARAMS_CMDS         (0x05 << 10) /* 0x1400 */
 
 // OGF + OCF
 #define HCI_RESET                          (0x0003 | HCI_GRP_HOST_CONT_BASEBAND_CMDS)
@@ -21,6 +22,9 @@
 #define HCI_PIN_REPLY                      (0x000D | HCI_GRP_LINK_CONT_CMDS)
 #define HCI_ACCEPT_CONNECTION              (0x0009 | HCI_GRP_LINK_CONT_CMDS)
 #define HCI_DISCONNECT                     (0x0006 | HCI_GRP_LINK_CONT_CMDS)
+/* --- Duck Hunt patch: how good is the radio link, in numbers --------------- */
+#define HCI_READ_LINK_QUALITY              (0x0003 | HCI_GRP_STATUS_PARAMS_CMDS)
+#define HCI_READ_RSSI                      (0x0005 | HCI_GRP_STATUS_PARAMS_CMDS)
 
 #define BD_ADDR_LEN     (6)
 struct bd_addr_t {
@@ -180,6 +184,29 @@ static uint16_t make_cmd_accept_connection(uint8_t *buf, struct bd_addr_t bd_add
   BDADDR_TO_STREAM(buf, bd_addr.addr);
   UINT8_TO_STREAM(buf, 0);
   return HCI_H4_CMD_PREAMBLE_SIZE + 7;
+}
+
+// --- Duck Hunt patch ------------------------------------------------------
+// Two one-parameter status commands, built the same way as everything above.
+// Together they say what a sagging report rate means: a weak signal (RSSI far
+// down) is distance, blocking or the antenna, while a strong signal with poor
+// link quality (the controller's own bit-error estimate) is interference.
+static uint16_t make_cmd_read_link_quality(uint8_t *buf, uint16_t connection_handle)
+{
+  UINT8_TO_STREAM(buf, H4_TYPE_COMMAND);
+  UINT16_TO_STREAM(buf, HCI_READ_LINK_QUALITY);
+  UINT8_TO_STREAM(buf, 2);
+  UINT16_TO_STREAM(buf, connection_handle);
+  return HCI_H4_CMD_PREAMBLE_SIZE + 2;
+}
+
+static uint16_t make_cmd_read_rssi(uint8_t *buf, uint16_t connection_handle)
+{
+  UINT8_TO_STREAM(buf, H4_TYPE_COMMAND);
+  UINT16_TO_STREAM(buf, HCI_READ_RSSI);
+  UINT8_TO_STREAM(buf, 2);
+  UINT16_TO_STREAM(buf, connection_handle);
+  return HCI_H4_CMD_PREAMBLE_SIZE + 2;
 }
 
 static uint16_t make_cmd_disconnect(uint8_t *buf, uint16_t connection_handle)

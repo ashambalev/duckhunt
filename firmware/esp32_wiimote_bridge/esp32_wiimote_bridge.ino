@@ -32,9 +32,24 @@ static uint16_t g_handle = 0;
 struct Dot { float x, y; int size; };   // size: the blob's extent, 0..15
 
 // Rumble recoil: a short pulse of the remote's vibration motor on a trigger pull.
-static const unsigned long RUMBLE_MS = 90;
+// Recoil is GONE. The motor lives in the remote and runs off the same two AA
+// cells as its radio, and the first measurement pointed straight at it: windows
+// with 21-32 shots gave 47-66 reports a second against 88-92 in the windows
+// with no shooting. The A/B run then cleared it — the half WITH recoil was the
+// better half (80-83/s) — so the motor was not the cause, but nobody wants it
+// back either, and one output report per shot is one less thing on the link.
+//
+// What that A/B did leave behind is a better question: the recoil sent two
+// output reports per shot, and the stream was fine while it did. Bluetooth
+// Classic links can drop into sniff mode when the host stops talking, which
+// costs exactly this kind of latency. So the keep-alive below sends the same
+// kind of packet on a timer — set_rumble(false), which runs no motor at all —
+// and 'k' turns it on, to see whether it is the traffic that keeps the link
+// awake. Off by default, because it is a hypothesis, not a fix.
+static const unsigned long KEEPALIVE_MS = 250;
+static bool KEEPALIVE_ON = false;
 static bool          g_prev_b = false;
-static unsigned long g_rumble_until = 0;
+static unsigned long g_keepalive_last = 0;
 
 // Step-by-step IR camera enabling: one command per IR_STEP_MS, so the remote has
 // time to acknowledge each register write (sent in one burst, they get lost).
@@ -66,6 +81,7 @@ static void ir_sequencer() {
     case 5: wii.ir_write_register(g_handle, 0xB00033, MODE3, 1); break;  // mode 3 (extended)
     case 6: wii.ir_write_register(g_handle, 0xB00030, V08, 1); break;
     case 7: wii.set_report_mode(g_handle, 0x33, true); status("IR camera enabled (0x33 continuous)."); break;
+    case 8: wii.request_status(g_handle); break;   // -> "# remote battery: ..."
     default: g_ir_step = 99; return;                                     // 99 = done
   }
   g_ir_step++;
@@ -94,13 +110,14 @@ static const float CAM_CX = 512.0f, CAM_CY = 384.0f;   // the barrel points here
 static bool CAM_MIRROR_X = false;
 static bool CAM_MIRROR_Y = true;
 
-// Where the beacon rectangle sits against the DISPLAY it surrounds — its centre
-// in display fractions and its size in display widths/heights. The defaults say
-// "the four LEDs are exactly on the display's corners", which is what the game
-// assumes: it converts display coordinates to its own letterboxed picture itself.
-// Change these if the LEDs ended up on a rectangle of a different size or
-// off-centre (a bezel too thin to reach, a TV frame): measure the LED rectangle
-// and the screen with a tape measure and divide. docs/BUILD.md walks through it.
+// Where the beacon rectangle sits against the screen it surrounds — its centre
+// and its size, in fractions of that screen. LEAVE THESE AT 0.5/0.5/1.0/1.0: the
+// same correction now lives in [gun] in settings.toml on the Mac side (frame,
+// beacon_w/h, beacon_cx/cy), where the beacons moving to another display costs an
+// edit instead of a flash, and where the game can also say the LEDs are on the
+// corners of its own letterboxed picture rather than the screen's. They are kept
+// here only so a gun can be aimed without the game. docs/BUILD.md walks
+// through it.
 static const float BEACON_CX = 0.5f, BEACON_CY = 0.5f;
 static const float BEACON_W  = 1.0f, BEACON_H  = 1.0f;
 
@@ -112,6 +129,21 @@ static int           g_dots_n = 0;
 static bool          g_dots_fresh = false;
 static unsigned long g_dump_ms = 500;      // 0 = every report, <0 impossible: 'o' = off
 static bool          g_dump_on = true;
+// How many reports the remote actually delivered in the last second, printed
+// once a second. This is the number that splits the two explanations of a
+// sagging stream: if the bridge says 96/s while the Mac counts 60/s, the loss is
+// on the wire or in this sketch; if the bridge itself says 60/s, the Bluetooth
+// link is dropping the reports and nothing on the Mac can fix it.
+static uint32_t      g_reports = 0;
+// The radio's own opinion of itself, asked for once a second. The report rate
+// alone cannot tell why it sags; these two can. A weak signal (rssi well below
+// -80) is distance, a body in the way, or the antenna. A strong signal with poor
+// quality (the controller's bit-error estimate, 255 = clean) is interference —
+// something else transmitting on 2.4 GHz.
+static int8_t        g_rssi = 0;
+static uint8_t       g_quality = 0;
+static bool          g_rssi_seen = false;      // do not print the initial zero:
+static bool          g_link_fresh = false;     // it reads like a perfect signal
 
 // The 12 IR bytes of report 0x33 -> up to 4 visible dots.
 static int ir_dots(const uint8_t* ir, Dot* out) {
@@ -254,8 +286,15 @@ static void wiimote_cb(wiimote_event_type_t ev, uint16_t handle, uint8_t* data, 
       g_handle = 0;
       g_ir_step = -1;
       g_prev_b = false;
-      g_rumble_until = 0;
       wii.scan(true);
+      break;
+    case WIIMOTE_EVENT_RSSI:
+      // A fresh connection answers 0 before it has measured anything, and 0 dBm
+      // is not a signal any radio in a room produces — so it means "not yet".
+      if (len >= 1 && data[0] != 0) { g_rssi = (int8_t)data[0]; g_rssi_seen = true; }
+      break;
+    case WIIMOTE_EVENT_LINK_QUALITY:
+      if (len >= 1) { g_quality = data[0]; g_link_fresh = true; }
       break;
     case WIIMOTE_EVENT_DATA:
       // The first report to arrive means the channel is up -> start the IR sequence.
@@ -267,14 +306,25 @@ static void wiimote_cb(wiimote_event_type_t ev, uint16_t handle, uint8_t* data, 
       if (len >= 19 && data[1] == 0x33) {
         bool b_now = (data[3] & 0x04);
         uint8_t buttons = b_now ? 0x01 : 0x00;              // the B button is the trigger
-        if (b_now && !g_prev_b && g_handle) {               // rising edge -> recoil
-          wii.set_rumble(g_handle, true);
-          g_rumble_until = millis() + RUMBLE_MS;
-        }
         g_prev_b = b_now;
+        // More of the remote's buttons, so the game has something to bind to
+        // without a keyboard: A hides the crosshair, HOME is spare. Byte layout
+        // of report 0x33: data[2] = dpad/plus, data[3] = two/one/B/A/minus/home.
+        if (data[3] & 0x08) buttons |= 0x02;                // A
+        if (data[3] & 0x80) buttons |= 0x04;                // HOME
         int ax = -1, ay = -1;
+        g_reports++;
         computeAim(&data[7], ax, ay);
         Serial.printf("%d,%d,%u\n", ax, ay, buttons);       // -> to the game
+      } else if (len >= 8 && data[1] == 0x20) {
+        // Status report: (a1) 20 BB BB LF 00 00 VV — VV is the battery level, and
+        // the remote sends this by itself on every connect, so the number is free
+        // and arrives exactly when it is wanted. Worth having in the log: tired
+        // AA cells are what makes the link drop under continuous IR reporting,
+        // and "the gun lags later in the game" looks identical to that. 0xC0 is
+        // about full; the percentage is rough on purpose.
+        Serial.printf("# remote battery: 0x%02X (~%d%% of full)\n",
+                      data[7], (int)((data[7] * 100) / 0xC0));
       } else if (len >= 2) {
         // DIAGNOSTICS: which report type the remote actually sends (every ~40th)
         static uint32_t c = 0;
@@ -287,15 +337,26 @@ static void wiimote_cb(wiimote_event_type_t ev, uint16_t handle, uint8_t* data, 
 }
 
 void setup() {
+  // The aim line is printed from inside the Bluetooth callback (see
+  // wiimote_cb), so a full UART buffer does not just delay a print — it stalls
+  // the BT stack, and the next reports queue up behind it. That is measurable:
+  // a run with the dot dump on every report showed the gap between reports
+  // doubling (18 -> 33 ms) and the rate dropping (88 -> 67/s) exactly in the
+  // windows where four beacons were in view, i.e. when the dump lines got long.
+  // A TX buffer big enough for a whole clump of reports keeps the callback from
+  // ever waiting on the wire.
+  Serial.setTxBufferSize(2048);
   Serial.begin(115200);
   delay(200);
   status("Duck Hunt Wiimote bridge (USB). Initializing BT...");
   // Which build is actually running, printed where every log picks it up: after
   // a couple of flag flips guessed from how the crosshair felt, "was that the
   // firmware I think it was?" stopped being a rhetorical question.
-  Serial.printf("# build %s %s | MIRROR_X=%d MIRROR_Y=%d | beacon %.2fx%.2f @ %.2f,%.2f\n",
+  Serial.printf("# build %s %s | MIRROR_X=%d MIRROR_Y=%d | beacon %.2fx%.2f @ %.2f,%.2f"
+                " | no recoil | keep-alive %s ('k')\n",
                 __DATE__, __TIME__, (int)CAM_MIRROR_X, (int)CAM_MIRROR_Y,
-                BEACON_W, BEACON_H, BEACON_CX, BEACON_CY);
+                BEACON_W, BEACON_H, BEACON_CX, BEACON_CY,
+                KEEPALIVE_ON ? "ON" : "off");
   wii.init(wiimote_cb);
 }
 
@@ -306,11 +367,17 @@ void loop() {
   // One-letter commands on the same port, for the debugging tools:
   //   d = dump the dots on every camera report (tools/ir_view.py wants this)
   //   s = back to twice a second (the default)      o = no dumping at all
+  //   k = keep-alive on/off (an output report every 250 ms, no motor)
   while (Serial.available()) {
     switch (Serial.read()) {
       case 'd': g_dump_ms = 0;   g_dump_on = true;  status("dot dump: every report"); break;
       case 's': g_dump_ms = 500; g_dump_on = true;  status("dot dump: 2 Hz"); break;
       case 'o': g_dump_on = false;                  status("dot dump: off"); break;
+      case 'k':
+        KEEPALIVE_ON = !KEEPALIVE_ON;
+        Serial.printf("# keep-alive: %s (an output report every %lu ms, no motor)\n",
+                      KEEPALIVE_ON ? "ON" : "off", KEEPALIVE_MS);
+        break;
       case 'x': CAM_MIRROR_X = !CAM_MIRROR_X; print_axes(); break;
       case 'y': CAM_MIRROR_Y = !CAM_MIRROR_Y; print_axes(); break;
       case '?': print_axes(); break;
@@ -322,7 +389,12 @@ void loop() {
   // This is the line to watch when the aim goes wrong — four dots in a sane
   // rectangle means the homography has everything it needs.
   static unsigned long last_dump = 0;
-  if (g_dump_on && g_dots_fresh && millis() - last_dump >= g_dump_ms) {
+  // ... and the dump waits its turn: if the buffer is already filling, the aim
+  // lines have the right of way and this frame's dots are simply skipped. A
+  // diagnostic that adds latency to the thing it is diagnosing is worse than no
+  // diagnostic.
+  if (g_dump_on && g_dots_fresh && millis() - last_dump >= g_dump_ms
+      && Serial.availableForWrite() > 96) {
     last_dump = millis();
     g_dots_fresh = false;
     char buf[120];
@@ -333,9 +405,34 @@ void loop() {
     Serial.println(buf);
   }
 
-  // switch the rumble motor off after the short pulse (non-blocking)
-  if (g_rumble_until && millis() > g_rumble_until) {
-    if (g_handle) wii.set_rumble(g_handle, false);
-    g_rumble_until = 0;
+  // the remote's own delivery rate, once a second (cheap, and it is the number
+  // that tells the Bluetooth link apart from everything downstream of it)
+  static unsigned long last_rate = 0;
+  if (millis() - last_rate >= 1000) {
+    last_rate = millis();
+    if (g_handle && Serial.availableForWrite() > 48)
+      Serial.printf("# rate: %u/s from the remote\n", g_reports);
+    g_reports = 0;
+    // and ask the controller how the link itself is doing; the answers arrive as
+    // events and get printed below, so this costs nothing in the callback
+    if (g_handle) { wii.read_rssi(g_handle); wii.read_link_quality(g_handle); }
+  }
+
+  if (g_link_fresh && g_rssi_seen && Serial.availableForWrite() > 64) {
+    g_link_fresh = false;
+    // This controller answers in absolute dBm, which the numbers settled: -40
+    // across the desk, -51 at playing distance, tracking the report rate all the
+    // way. (The 0 that showed up in the first run was this variable before any
+    // answer had arrived, which is why the print now waits for one.)
+    // Quality is the controller's own bit-error estimate, 255 = clean.
+    Serial.printf("# link: rssi %d dBm, quality %u/255\n",
+                  (int)g_rssi, g_quality);
+  }
+
+  // the keep-alive: one harmless output report on a timer, to test whether a
+  // link that is being talked to stays faster than one that is not
+  if (KEEPALIVE_ON && g_handle && millis() - g_keepalive_last >= KEEPALIVE_MS) {
+    g_keepalive_last = millis();
+    wii.set_rumble(g_handle, false);        // rumble bit clear = motor stays off
   }
 }

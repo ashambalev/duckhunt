@@ -10,7 +10,11 @@ enum wiimote_event_type_t {
   WIIMOTE_EVENT_NEW,
   WIIMOTE_EVENT_CONNECT,
   WIIMOTE_EVENT_DISCONNECT,
-  WIIMOTE_EVENT_DATA
+  WIIMOTE_EVENT_DATA,
+  // --- Duck Hunt patch: radio link diagnostics. data[0] carries the value:
+  // RSSI as a SIGNED byte, link quality as 0..255 (bigger is better).
+  WIIMOTE_EVENT_RSSI,
+  WIIMOTE_EVENT_LINK_QUALITY
 };
 
 enum balance_position_type_t {
@@ -40,6 +44,9 @@ class Wiimote {
     void ir_send_report(uint16_t handle, uint8_t id, uint8_t val);
     void ir_write_register(uint16_t handle, uint32_t offset, const uint8_t* data, uint8_t len);
     void set_report_mode(uint16_t handle, uint8_t mode, bool cont);
+    void request_status(uint16_t handle);            // -> report 0x20, has the battery
+    void read_rssi(uint16_t handle);                 // -> WIIMOTE_EVENT_RSSI
+    void read_link_quality(uint16_t handle);         // -> WIIMOTE_EVENT_LINK_QUALITY
   private:
     wiimote_callback_t _wiimote_callback;
 };

@@ -15,10 +15,12 @@ Two panels:
     homography is solving; amber = fewer than four dots or a rejected quad, so
     the firmware has fallen back to the coarse centroid aim);
   * the SCREEN — where the firmware says the gun is pointing, 0..1 in both axes,
-    with a short trail. The four beacons span the whole display, so this panel is
-    the display; the inner rectangle is the game's letterboxed picture, which is
+    with a short trail. What that rectangle is comes from [gun] frame in
+    settings.toml: with the beacons on the display's corners the panel is the
+    display and the inner rectangle is the game's letterboxed picture, which is
     where the ducks actually are (the pixel art is scaled by a whole number, so
-    black bars are left over — see docs/BUILD.md).
+    black bars are left over — see docs/BUILD.md); with the beacons on the
+    picture's corners the panel is that picture and there is no inner rectangle.
 
 Running it (the game must NOT be running — the port takes one reader):
 
@@ -33,8 +35,9 @@ firmware prints the new setting, so the log always says what it was recorded
 under. Whatever it is when the crosshair tracks the barrel is the right answer;
 copy it into CAM_MIRROR_X / CAM_MIRROR_Y so it survives the next flash.
 
-Tagging: HOLD 1 2 3 4 while aiming at that corner of the PHYSICAL screen, where
-the LEDs are, not the corner of the picture (5 = the centre). The tag lasts only
+Tagging: HOLD 1 2 3 4 while aiming at the corner OF THE BEACON RECTANGLE — where
+the LEDs actually are, which is the picture's corner or the screen's depending on
+how they were taped up (5 = the centre). The tag lasts only
 while the key is down, so a forgotten key cannot label a whole session. Three
 seconds per corner is plenty. C clears the trail, Q/Esc quits.
 
@@ -108,6 +111,10 @@ def scene_frac():
     try:
         import pygame
 
+        # init first: without it neither call below can answer, which is how the
+        # scene silently went into the logs as null (and the summary's display
+        # line with it) whenever this ran before the view had opened a window.
+        pygame.init()
         # get_desktop_sizes() keeps answering about the DESKTOP; display.Info()
         # starts answering about our own window once one is open.
         try:
@@ -122,6 +129,476 @@ def scene_frac():
         return ((sw - w) // 2 / sw, (sh - h) // 2 / sh, w / sw, h / sh)
     except Exception:
         return None
+
+
+def art_size():
+    """The pixel art's own size, 256x183 — the background the letterbox is built
+    out of. Read off the file so it cannot drift from the assets."""
+    import pygame
+
+    pygame.init()
+    return pygame.image.load(
+        str(REPO / "assets" / "backgrounds" / "meadow.png")).get_size()
+
+
+def plan(diagonal=None):
+    """Where to tape the beacons and how far back to stand — one table.
+
+    Planned for the display the game goes fullscreen on (the first one), so run
+    it on the screen you are going to play on.
+
+    Every [scene] scale the display can fit, what picture it gives, and what
+    playing distance the beacon rectangle around that picture then asks for
+    (DISTANCE = ITS WIDTH x 4.8; x 3.4 is the bare minimum, see docs/BUILD.md).
+    With `--diagonal INCHES` the same table in centimetres and metres, which is
+    the form you can act on.
+    """
+    d = desktop_size()
+    bw, bh = art_size()
+    if not d:
+        return "no display to plan for"
+    sw, sh = d
+    fits = max(1, min(sw // bw, sh // bh))
+    cm_per_px = None
+    if diagonal:
+        # the screen's own aspect, so an ultrawide is not assumed to be 16:9
+        ar = sw / sh
+        h_cm = diagonal * 2.54 / math.sqrt(1 + ar * ar)
+        cm_per_px = ar * h_cm / sw
+
+    # [scene] fit = "height" does not use the whole-number table below at all:
+    # the picture is as tall as the screen and the beacon rectangle around it is
+    # that much bigger, so say what it actually comes out as.
+    fitted = ""
+    try:
+        sys.path.insert(0, str(REPO))
+        from duckhunt.core import config
+
+        if config.load().scene.fit == "height":
+            H = sh
+            W = int(round(bw * sh / bh))
+            if W > sw:
+                W, H = sw, int(round(bh * sw / bw))
+            fitted = (f'[scene] fit = "height": the picture is {W}x{H} px '
+                      f"({100*W/sw:.0f}% x {100*H/sh:.0f}% of the display)")
+            if cm_per_px:
+                comfy, least, axis = distance(W * cm_per_px, H * cm_per_px)
+                fitted += (f" = {W*cm_per_px:.0f}x{H*cm_per_px:.0f} cm; beacons on "
+                           f"ITS corners want {comfy:.1f} m (minimum {least:.1f} m, "
+                           f"set by the {axis})")
+    except Exception:
+        pass
+
+    out = [f"display {sw}x{sh}"
+           + (f', {diagonal}" diagonal ({ar * h_cm:.0f}x{h_cm:.0f} cm)' if cm_per_px
+              else " (pass --diagonal INCHES for centimetres and metres)"),
+           f"art {bw}x{bh}, {'scaled to the screen height' if fitted else 'a whole multiple of it'}, centred"]
+    if fitted:
+        out += [fitted, "",
+                "the whole-number fits below are what [scene] fit = \"integer\" "
+                "(or any explicit scale) would give:"]
+    out.append("")
+    head = f"{'scale':>6}  {'picture px':>11}  {'% of display':>12}"
+    if cm_per_px:
+        head += f"  {'beacon rect':>11}  {'stand at':>9}  {'minimum':>8}"
+    out += [head, "-" * len(head)]
+    for k in range(fits, 1, -1):
+        W, H = bw * k, bh * k
+        row = (f"{k:>5}x  {W:>5}x{H:<5}  {100*W/sw:>5.0f}% x{100*H/sh:>4.0f}%")
+        if cm_per_px:
+            w_cm, h_cm_pic = W * cm_per_px, H * cm_per_px
+            row += (f"  {f'{w_cm:.0f}x{h_cm_pic:.0f} cm':>11}"
+                    f"  {w_cm*4.8/100:>7.1f} m  {w_cm*3.4/100:>6.1f} m")
+        wanted = config_scale()
+        if k == (wanted or fits):
+            row += ("   <- settings.toml, scale = 0 (as big as fits)" if not wanted
+                    else f"   <- settings.toml, scale = {wanted}")
+        elif k == fits:
+            row += "   as big as fits (scale = 0)"
+        out.append(row)
+
+    frame, g = gun_frame(), gun_rect()
+    out += [""]
+    if frame == "picture":
+        out += ['[gun] frame = "picture" — the beacons are on the picture\'s own '
+                "corners, so the table above is what to measure against",
+                "the game prints the exact rectangle it chose at startup — tape "
+                "the beacons to that"]
+    else:
+        bw, bh = sw * g[0], sh * g[1]
+        line = ('[gun] frame = "display" — the beacons are on the screen (its bezel, '
+                f"say): {g[0]:.3f} x {g[1]:.3f} of the display")
+        if cm_per_px:
+            comfy, least, axis = distance(bw * cm_per_px, bh * cm_per_px)
+            line += (f" = {bw*cm_per_px:.0f}x{bh*cm_per_px:.0f} cm, so stand at "
+                     f"{comfy:.1f} m (minimum {least:.1f} m), whatever the scale")
+        out += [line,
+                "the scale only changes how much of your aiming range the ducks "
+                "occupy, not the distance — `--bezel` is the calculator for this "
+                "wiring"]
+    return "\n".join(out)
+
+
+def gun_rect():
+    """[gun] beacon_w/beacon_h from settings.toml (1.0, 1.0 if unreadable)."""
+    try:
+        sys.path.insert(0, str(REPO))
+        from duckhunt.core import config
+
+        g = config.load().gun
+        return g.beacon_w, g.beacon_h
+    except Exception:
+        return 1.0, 1.0
+
+
+# The playing distance, from the size of the beacon rectangle. The horizontal
+# rule (x 4.8) is calibrated against real runs: the rectangle wants to fill ~35%
+# of the 33-degree frame, x 3.4 is the bare minimum. The vertical one is the same
+# 35% of the narrower ~23-degree axis, worked out rather than measured — it only
+# bites when the rectangle is taller than 1.5:1, which the screen's own corners
+# never are but a rectangle narrowed along the bezel can be.
+DIST_W, DIST_H = 4.82, 7.02
+GunStats_SPAN = 3.0     # the window the game averages its gun numbers over
+DIST_W_MIN, DIST_H_MIN = 3.40, 4.95
+
+
+def distance(w_cm, h_cm):
+    """(comfortable, bare minimum) playing distance in metres, and which axis of
+    the beacon rectangle is the one deciding it."""
+    comfy = max(DIST_W * w_cm, DIST_H * h_cm) / 100
+    least = max(DIST_W_MIN * w_cm, DIST_H_MIN * h_cm) / 100
+    axis = "width" if DIST_W * w_cm >= DIST_H * h_cm else "height"
+    return comfy, least, axis
+
+
+def bezel(diagonal, offsets):
+    """The four [gun] numbers for beacons stuck somewhere other than the picture.
+
+    `offsets` are where the LED bundles' centres sit relative to the screen's own
+    edges, in mm, positive outwards: TOP RIGHT BOTTOM LEFT (one number means all
+    four, two mean vertical then horizontal). Negative is inwards, onto the glass
+    — which is how a rectangle gets narrower than the screen, the only way to
+    play closer once the LEDs are on the bezel.
+    """
+    d = desktop_size()
+    if not d:
+        return "no display to measure against"
+    if not diagonal:
+        return "--bezel needs --diagonal INCHES to turn millimetres into fractions"
+    sw, sh = d
+    if len(offsets) == 1:
+        top = right = bottom = left = offsets[0]
+    elif len(offsets) == 2:
+        top = bottom = offsets[0]
+        right = left = offsets[1]
+    elif len(offsets) == 4:
+        top, right, bottom, left = offsets
+    else:
+        return "--bezel takes 1, 2 (vertical horizontal) or 4 (top right bottom left) numbers"
+
+    ar = sw / sh
+    h_cm = diagonal * 2.54 / math.sqrt(1 + ar * ar)
+    w_cm = ar * h_cm
+    # mm -> cm, and the rectangle the LEDs actually describe
+    bw_cm = w_cm + (left + right) / 10
+    bh_cm = h_cm + (top + bottom) / 10
+    beacon_w = bw_cm / w_cm
+    beacon_h = bh_cm / h_cm
+    beacon_cx = 0.5 + (right - left) / 20 / w_cm
+    beacon_cy = 0.5 + (bottom - top) / 20 / h_cm
+
+    bw_art, bh_art = art_size()
+    k = config_scale() or max(1, min(sw // bw_art, sh // bh_art))
+    pic_w_cm = bw_art * k / sw * w_cm
+    pic_h_cm = bh_art * k / sh * h_cm
+    comfy, least, axis = distance(bw_cm, bh_cm)
+
+    out = ["(measured against the display the game goes fullscreen on — run this "
+           "on the screen you will play on)",
+           f'screen {w_cm:.1f} x {h_cm:.1f} cm ({diagonal}", {sw}x{sh})',
+           f"LED centres: {top:g} mm above the top edge, {bottom:g} below the "
+           f"bottom, {left:g} outside the left, {right:g} outside the right",
+           f"beacon rectangle {bw_cm:.1f} x {bh_cm:.1f} cm",
+           "",
+           "[gun]",
+           'frame = "display"',
+           f"beacon_w = {beacon_w:.3f}",
+           f"beacon_h = {beacon_h:.3f}",
+           f"beacon_cx = {beacon_cx:.3f}",
+           f"beacon_cy = {beacon_cy:.3f}",
+           "",
+           f"stand at {comfy:.1f} m (bare minimum {least:.1f} m) — set by the "
+           f"rectangle's {axis}",
+           f"the picture at scale {k}x is {pic_w_cm:.1f} x {pic_h_cm:.1f} cm"]
+    if pic_w_cm > bw_cm + 0.05 or pic_h_cm > bh_cm + 0.05:
+        # the firmware clamps the aim to the beacon rectangle, so a picture
+        # sticking out of it has corners the crosshair can never reach
+        fits = max(1, min(int(bw_cm / w_cm * sw) // bw_art,
+                          int(bh_cm / h_cm * sh) // bh_art))
+        out += ["",
+                "  -> THE PICTURE STICKS OUT OF THE BEACON RECTANGLE: the "
+                "firmware clamps the aim",
+                "     to that rectangle, so the crosshair could never reach the "
+                "picture's edge.",
+                f"     Set [scene] scale = {fits} (or less) so the picture fits "
+                "inside it."]
+    else:
+        out.append(f"  -> the picture fits inside the beacon rectangle, so every "
+                   f"corner is reachable")
+    return "\n".join(out)
+
+
+def trend(path, window=None):
+    """Does it get worse as you play? One row per minute.
+
+    "The lag shows up later in the game" is a claim about a TREND, which a single
+    average hides — so this buckets a run by time and shows the report rate, how
+    clumped the reports were (p90 and worst gap) and how often all four beacons
+    were in view. Reads either log: `ir_view`'s own (one record per camera
+    report) or the game's `--log-gun` (one summary per second, which also carries
+    the frame rate, so a game that slowed down can be told from a link that did).
+    """
+    reports, summaries, said, bridge = [], [], [], []
+    link, battery = [], []
+    with Path(path).open() as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "dots" in rec:
+                reports.append(rec)
+            elif "rate" in rec:
+                # Logs written before the rate was computed over a time window
+                # can carry impossible values (the whole window landing inside
+                # one poll divided by a near-zero span). The remote cannot send
+                # more than ~100 a second, so anything past 500 is that bug.
+                if rec["rate"] <= 500:
+                    summaries.append(rec)
+            elif "status" in rec and rec.get("t"):
+                said.append(rec)
+                m = re.search(r"# rate: (\d+)/s", rec["status"])
+                if m:
+                    bridge.append((rec["t"], int(m.group(1))))
+                m = re.search(r"# link: rssi (-?\d+)[^,]*, quality (\d+)", rec["status"])
+                if m and int(m.group(1)) != 0:   # 0 = the controller had not
+                    link.append((rec["t"], int(m.group(1)), int(m.group(2))))
+                m = re.search(r"# remote battery: \S+ \(~(\d+)%", rec["status"])
+                if m:
+                    battery.append((rec["t"], int(m.group(1))))
+    if not reports and not summaries:
+        return f"{path}: nothing to plot a trend from"
+
+    # about a dozen rows whatever the run's length: a two-minute test and a
+    # fourteen-minute one both want to be readable at a glance
+    if window is None:
+        span = max((r["t"] for r in reports + summaries), default=60.0)
+        window = max(5.0, round(span / 12 / 5) * 5 or 5.0)
+
+    out = [f"trend of {path}, one row per {window:g} s"]
+    if reports:
+        out += [f"{'window':>13}  {'reports/s':>9}  {'gap p90':>8}  {'gap max':>8}"
+                f"  {'4 dots':>7}", "-" * 54]
+        buckets = {}
+        for r in reports:
+            buckets.setdefault(int(r["t"] // window), []).append(r)
+        for k in sorted(buckets):
+            rs = buckets[k]
+            ts = [r["t"] for r in rs]
+            gaps = sorted(b - a for a, b in zip(ts, ts[1:])) or [0.0]
+            four = sum(1 for r in rs if r["n"] == 4)
+            out.append(f"{k*window:6.0f}-{(k+1)*window:5.0f}s  {len(rs)/window:9.1f}  "
+                       f"{1000*gaps[int(0.9*(len(gaps)-1))]:7.0f}ms  "
+                       f"{1000*gaps[-1]:7.0f}ms  {100*four/len(rs):6.0f}%")
+    if summaries:
+        bridge_col = "  bridge/s" if bridge else ""
+        link_col = "  rssi  qual" if link else ""
+        flag = ("keepalv" if any("keepalive" in r for r in summaries)
+                else "recoil" if any("recoil" in r for r in summaries) else "")
+        recoil_col = f"  {flag}" if flag else ""
+        out += [f"{'window':>13}  {'reports/s':>9}{bridge_col}{link_col}"
+                f"  {'stalls/s':>8}  {'worst':>8}  {'blind':>6}  {'shots':>5}"
+                f"  {'fps':>4}{recoil_col}",
+                "-" * (70 + len(recoil_col) + len(bridge_col) + len(link_col))]
+        buckets = {}
+        for r in summaries:
+            buckets.setdefault(int(r["t"] // window), []).append(r)
+        for k in sorted(buckets):
+            rs = buckets[k]
+            def mean(key, default=0.0):
+                vals = [r[key] for r in rs if r.get(key) is not None]
+                return statistics.fmean(vals) if vals else default
+            shots = sum(r.get("shots", 0) for r in rs)
+            # "keepalive" now, "recoil" in the logs from before it was removed
+            key = "keepalive" if any("keepalive" in r for r in rs) else "recoil"
+            rec = ("  ON" if all(r.get(key) for r in rs) else
+                   " off" if not any(r.get(key) for r in rs) else " mix")
+            # "holes" is the current field; "gap" was the old p90, kept readable
+            stalls = (f"{mean('holes'):7.1f} " if any("holes" in r for r in rs)
+                      else f"{1000*mean('gap'):6.0f}ms")
+            if bridge:
+                vals = [v for t, v in bridge if k * window <= t < (k + 1) * window]
+                br = f"  {statistics.fmean(vals):8.1f}" if vals else f"  {'—':>8}"
+            else:
+                br = ""
+            if link:
+                vals = [(r, q) for t, r, q in link
+                        if k * window <= t < (k + 1) * window]
+                lk = (f"  {statistics.fmean(v[0] for v in vals):4.0f}  "
+                      f"{statistics.fmean(v[1] for v in vals):4.0f}" if vals
+                      else f"  {'—':>4}  {'—':>4}")
+            else:
+                lk = ""
+            out.append(f"{k*window:6.0f}-{(k+1)*window:5.0f}s  {mean('rate'):9.1f}{br}{lk}  "
+                       f"{stalls}  {1000*max(r['worst'] for r in rs):7.0f}ms  "
+                       f"{100*mean('blind'):5.0f}%  {shots:5.0f}  {mean('fps'):4.0f}"
+                       f"{rec if recoil_col else ''}")
+    # A run that asked for a dump on every report is measuring its own load: the
+    # dump line is ~62 bytes with four dots against ~12 with none, and at 88
+    # reports a second that is over half the port. Say so, or the table gets read
+    # as a link problem.
+    if any("every report" in str(rec.get("status", ""))
+           for rec in (json.loads(l) for l in Path(path).open())
+           if "status" in rec):
+        out.append("NOTE: this run had the dot dump on EVERY report (ir_view asks "
+                   "for it), which is ~6x the serial traffic as soon as four dots")
+        out.append("      are in view — the gaps growing in the four-dot rows are "
+                   "that load, not the link. The game keeps the dump off, so")
+        out.append("      compare game logs (--log-gun) with game logs.")
+    # The A/B, grouped by the flag rather than by the clock: toggling a setting
+    # mid-round is done by hand, from across the room, so the switch times are
+    # not known and do not need to be. Each second already carries the state it
+    # was in; the only care needed is dropping the seconds right after a switch,
+    # because the numbers are averaged over the preceding three.
+    flagged = [r for r in summaries if "keepalive" in r or "recoil" in r]
+    if flagged and len({bool(r.get("keepalive", r.get("recoil"))) for r in flagged}) == 2:
+        name = "keep-alive" if "keepalive" in flagged[0] else "recoil"
+        groups = {True: [], False: []}
+        prev, t_switch = None, None
+        for r in flagged:
+            state = bool(r.get("keepalive", r.get("recoil")))
+            if state != prev:
+                t_switch, prev = r["t"], state
+            if t_switch is not None and r["t"] - t_switch < GunStats_SPAN:
+                continue                      # the window still holds the old state
+            groups[state].append(r)
+        out.append("")
+        out.append(f"A/B by {name}, seconds grouped by the state they were in "
+                   f"(the {GunStats_SPAN:g} s after each switch dropped):")
+        out.append(f"  {'state':>10}  {'seconds':>7}  {'reports/s':>9}  "
+                   f"{'stalls/s':>8}  {'worst':>7}")
+        for state in (False, True):
+            rs = groups[state]
+            if not rs:
+                out.append(f"  {'ON' if state else 'off':>10}  {'—':>7}")
+                continue
+            out.append(f"  {'ON' if state else 'off':>10}  {len(rs):7d}  "
+                       f"{statistics.fmean(r['rate'] for r in rs):9.1f}  "
+                       f"{statistics.fmean(r['holes'] for r in rs):8.1f}  "
+                       f"{1000*max(r['worst'] for r in rs):6.0f}ms")
+        if all(groups.values()):
+            d = (statistics.fmean(r["rate"] for r in groups[True])
+                 - statistics.fmean(r["rate"] for r in groups[False]))
+            out.append(f"  -> {name} ON is {d:+.1f} reports/s"
+                       + ("  (worth keeping)" if d > 5 else
+                          "  (worth removing)" if d < -5 else
+                          "  (no difference worth the name)"))
+
+    # A link that re-paired mid-round explains a hole that no rate can
+    mid = [r for r in said
+           if any(w in r["status"] for w in ("New remote", "authenticating",
+                                             "connected", "Channel", "BT init"))]
+    if mid:
+        out.append("")
+        out.append("what the bridge said DURING the run (a re-pair here is a "
+                   "dropped link, i.e. a frozen crosshair):")
+        for r in mid[:12]:
+            out.append(f"  {r['t']:6.1f}s  {r['status']}")
+        if len(mid) > 12:
+            out.append(f"  ... and {len(mid) - 12} more")
+    if battery:
+        out.append("")
+        out.append(f"remote battery: ~{battery[0][2-1]}% of full at {battery[0][0]:.0f}s"
+                   if False else
+                   f"remote battery: ~{battery[0][1]}% of full "
+                   f"(read at {battery[0][0]:.0f}s)")
+    if link:
+        qual = [q for _, _, q in link]
+        rssi = [r for _, r, _ in link]
+        out.append("")
+        r_worst = min(rssi)
+        out.append(f"link: rssi {r_worst} to {max(rssi)} dBm, "
+                   f"quality {min(qual)}-{max(qual)} of 255")
+        # On this controller the "link quality" is not an independent measurement
+        # at all: it comes back as exactly 255 + rssi, every sample. Worth saying
+        # out loud, because a low quality number next to a healthy signal looks
+        # like interference and is not — it is the same number twice.
+        if all(q == 255 + r for r, q in zip(rssi, qual)):
+            out.append("  (quality here is exactly 255 + rssi — the controller "
+                       "restates the signal rather than measuring errors,")
+            out.append("   so it says nothing the rssi does not. Interference "
+                       "cannot be diagnosed from these two.)")
+        if r_worst < -75:
+            out.append("  -> a WEAK SIGNAL: distance, a body in the way, or the "
+                       "antenna. Bluetooth starts failing below about -80 dBm.")
+
+        # What the rate actually does against the signal. Each second is matched
+        # to the nearest link reading; a rate that climbs steeply with a few dB
+        # means the link has no margin, whatever the absolute dBm suggest.
+        pairs = []
+        for r in summaries:
+            near = min(link, key=lambda L: abs(L[0] - r["t"]))
+            if abs(near[0] - r["t"]) <= 2.0:
+                pairs.append((near[1], r["rate"]))
+        if len(pairs) > 20:
+            buckets = {}
+            for db, rate in pairs:
+                buckets.setdefault(round(db / 3) * 3, []).append(rate)
+            out.append("")
+            out.append("  reports/s against signal (each second matched to the "
+                       "nearest reading):")
+            for db in sorted(buckets):
+                rates = buckets[db]
+                if len(rates) < 5:
+                    continue
+                out.append(f"    {db:4d} dBm  ->  {statistics.fmean(rates):5.1f}/s"
+                           f"   (n={len(rates)})")
+            out.append("  a curve this steep over ten-odd dB is a link with no "
+                       "margin: the fix is signal, not settings —")
+            out.append("  put the receiver where the player stands (USB extension) "
+                       "or give it a better antenna.")
+    out.append("")
+    out.append("a rate that sags or gaps that grow as the rows go down = the link "
+               "getting worse (antenna, distance, batteries);")
+    out.append("steady numbers with a falling fps = the game; steady everything = "
+               "the lag is the fixed 40-60 ms budget, not a drift")
+    return "\n".join(out)
+
+
+def config_scale():
+    """[scene] scale from settings.toml, or None if it is 0/unreadable."""
+    try:
+        sys.path.insert(0, str(REPO))
+        from duckhunt.core import config
+
+        return config.load().scene.scale or None
+    except Exception:
+        return None
+
+
+def gun_frame():
+    """What [gun] frame in settings.toml says the beacon rectangle is: "display"
+    (the LEDs are on the physical screen's corners — the SCREEN panel below is
+    then the display, with the picture a smaller rectangle inside it) or
+    "picture" (the LEDs are on the picture's own corners — the panel IS the
+    picture, and there is no inner rectangle to draw)."""
+    try:
+        sys.path.insert(0, str(REPO))
+        from duckhunt.core import config
+
+        return config.load().gun.frame
+    except Exception:
+        return "display"
 
 
 def missing_corner(dots):
@@ -292,7 +769,10 @@ class View:
 
         self.pg = pygame
         pygame.init()
-        self.scene = scene_frac()      # the picture inside the display, or None
+        # the picture inside the display, or None when there is nothing to draw:
+        # with the beacons on the picture's corners the panel is the picture
+        self.frame = gun_frame()
+        self.scene = None if self.frame == "picture" else scene_frac()
         pygame.display.set_caption("Duck Hunt — what the gun sees")
         self.surf = pygame.display.set_mode((self.W, self.H))
         self.font = pygame.font.SysFont("Menlo,Monaco,monospace", 13)
@@ -351,8 +831,10 @@ class View:
         self.text(f"dots {n}/4   {state}", 24, 438, self.GOOD if solving else self.WARN)
         self.text(f"four-dot frames this run: {four_pct:5.1f}%", 24, 458, self.DIM)
 
-        self.text("SCREEN  where the firmware says the gun points — judge the aim "
-                  "here, not above", 24, 478, self.DIM)
+        panel = ("the picture itself" if self.frame == "picture"
+                 else "the display, ducks inside")
+        self.text(f"SCREEN  where the firmware says the gun points ({panel}) — "
+                  "judge the aim here, not above", 24, 478, self.DIM)
         pg.draw.rect(s, (46, 46, 58), self.SCR_RECT, 1)
         # the letterboxed picture: outside it there is only black bar, and the
         # game clamps the crosshair to its edge
@@ -388,7 +870,7 @@ class View:
                   self.AIM if fire else self.INK, self.big)
         if tag:
             want = TARGETS[tag]
-            self.text(f"aiming at {tag} of the SCREEN "
+            self.text(f"aiming at {tag} of the BEACON RECTANGLE "
                       f"(expect {want[0]:.1f},{want[1]:.1f}) — hold the key",
                       24, y0 + 16, self.WARN)
             wx, wy = self.scr_xy(*want)
@@ -424,10 +906,13 @@ def summarize(path: Path) -> str:
         if "meta" in rec and rec["meta"].get("scene"):
             d = rec["meta"].get("desktop")
             x, y, w, h = rec["meta"]["scene"]
+            where = ("on the picture's corners"
+                     if rec["meta"].get("gun_frame") == "picture"
+                     else "on the screen's corners")
             out.append(f"display {d[0]}x{d[1]}, the game's picture fills "
-                       f"{100*w:.0f}% x {100*h:.0f}% of it — beacons on the screen's "
-                       f"corners need {1/w:.2f}x the playing distance that beacons "
-                       f"on the picture's corners would")
+                       f"{100*w:.0f}% x {100*h:.0f}% of it — beacons {where} "
+                       f"([gun] frame); on the screen's they need {1/w:.2f}x the "
+                       f"playing distance the picture's do")
             break
     if not samples:
         out.append("nothing was recorded — did the remote pair? statuses seen:")
@@ -691,6 +1176,7 @@ def run(port: str, window: bool) -> Path:
     log.write(json.dumps({"t": 0.0, "meta": {"port": port, "cam": [CAM_W, CAM_H],
                                              "desktop": desktop_size(),
                                              "scene": scene,
+                                             "gun_frame": gun_frame(),
                                              "started": time.strftime("%F %T")}}) + "\n")
 
     bridge = Bridge(port)
@@ -776,10 +1262,40 @@ def main() -> None:
                     help="record the log without opening the pygame window")
     ap.add_argument("--summary", metavar="LOG",
                     help="print the summary of an existing log and exit")
+    ap.add_argument("--window", type=float, metavar="S",
+                    help="seconds per row for --trend (default: the run / 12)")
+    ap.add_argument("--trend", metavar="LOG",
+                    help="does it get worse over time? one row per minute, from "
+                         "an ir_view log or the game's --log-gun log")
+    ap.add_argument("--plan", action="store_true",
+                    help="print where to tape the beacons and how far back to "
+                         "stand, for every [scene] scale, and exit")
+    ap.add_argument("--bezel", nargs="+", type=float, metavar="MM",
+                    help="the four [gun] numbers for beacons on the bezel: how far "
+                         "outside the screen's edges the LED centres sit, in mm "
+                         "(one number, or vertical horizontal, or top right bottom "
+                         "left; negative = inwards, onto the glass). Needs --diagonal")
+    ap.add_argument("--diagonal", type=float, metavar="INCHES",
+                    help="the screen's diagonal, so --plan can answer in "
+                         "centimetres and metres")
     args = ap.parse_args()
+
+    if args.trend:
+        print(trend(args.trend, args.window))
+        return
+
+    if args.bezel:
+        print(bezel(args.diagonal, args.bezel))
+        return
+
+    if args.plan:
+        print(plan(args.diagonal))
+        return
 
     if args.summary:
         print(summarize(Path(args.summary)))
+        print()
+        print(trend(args.summary, args.window))
         return
 
     window = not args.no_window

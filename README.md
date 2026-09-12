@@ -18,8 +18,8 @@ GUN                                          MAC (pygame window)
   4 IR dots + trigger (B button)  │  BT Classic
                                   ├──────────▶ ESP32-WROOM-32U
                                   │              │  USB-Serial, 115200
-  4× 940 nm IR LEDs at the ───────┘              │  x,y,b
-  screen corners (the "sensor bar")              ▼
+  4× 940 nm IR LEDs on the ───────┘              │  x,y,b
+  picture's corners (the "sensor bar")           ▼
                                         InputSource ─▶ World (30 FPS)
                                                      ─▶ pixel frontend:
                                                         ducks, dog, crosshair,
@@ -78,14 +78,44 @@ simply not seen (that LED is dim, misaimed or dead).
 ```bash
 .venv/bin/python tools/ir_view.py                  # live view + log (quit with Q)
 .venv/bin/python tools/ir_view.py --summary logs/ir_view_<time>.jsonl
+.venv/bin/python tools/ir_view.py --plan --diagonal 27   # where to tape the beacons
+.venv/bin/python tools/ir_view.py --bezel 5 5 10 5 --diagonal 27   # ... on the bezel
 ```
+
+**Testing the aim without any hardware.** `tools/fake_gun.py` sends the same
+`x,y,b` stream over UDP that the bridge does, so the whole Mac side of the aim —
+the `[gun]` rectangle, the letterbox conversion, the crosshair, the hitbox — can
+be tested with a known aim point instead of a shaking hand. Two terminals:
+
+```bash
+.venv/bin/python main.py --pygame --udp           # the game, listening
+.venv/bin/python tools/fake_gun.py --fire         # aim at each corner in turn, and shoot
+.venv/bin/python tools/fake_gun.py --sweep        # a slow circle
+```
+
+With `[gun] frame = "picture"` the crosshair should reach the four corners of the
+picture exactly and shoot there; `--blind` (no beacons in view) should freeze it
+where it was rather than jump.
 
 The remote re-pairs by itself if the link drops mid-round: the game keeps running and
 the crosshair freezes at its last position until the stream comes back.
 
+The round starts when you pull the trigger (or press Space) on the title screen,
+and then `[round] countdown` seconds tick down — 5 by default — before the first
+duck, so there is time to get the gun up. A shot has a radius, `[gun] spread`:
+the crosshair circle *is* the hit zone, and the nearest duck touching it falls.
+
 In game: **mouse / gun** aims, **left button / trigger** fires, **B** cycles the
-background, **Space** starts another round on the results screen, **Q** or **Esc**
-quits.
+background, **Tab** shows where the IR beacons go, **G** puts the gun's own
+numbers on the HUD (report rate, how clumped the reports are, how often the
+beacons are out of view, how old the aim is — "it feels laggy" has three
+different causes and these tell them apart), **Space** starts another round
+on the results screen, **Q** or **Esc** quits. `--align` starts with those
+targets up, and what it draws follows `[gun] frame`: with `"picture"`, brackets in
+the picture's four corners to tape a bundle into; with `"display"`, the letterbox
+bars go pale grey so the screen's own edge is visible and the brackets sit in the
+screen's corners, for beacons on the bezel — plus a thin blue set on the
+picture's corners to aim at and check the numbers.
 
 ### Bringing up the gun
 
@@ -97,17 +127,24 @@ quits.
    booting is simply not heard (it prints `# BT init...` when it is ready to listen).
    Pairing then takes well under a second. The board prints its progress as `# ...`
    lines on the same serial port — the game's parser ignores them.
-3. Put the four IR LEDs at the corners of the screen (see
-   [`docs/BUILD.md`](docs/BUILD.md)) and run the game with `--serial`.
+3. Stick the four IR LEDs down and say where they ended up, in `[gun]`:
+   on the corners of the **game's picture** (`frame = "picture"` — nothing to
+   measure, `--align` puts targets there, and it plays the same on any screen), or
+   on the **bezel** around the screen (`frame = "display"` plus the four numbers
+   `tools/ir_view.py --bezel` prints — nothing stuck to the glass, at the cost of
+   a longer playing distance). Then run the game with `--serial`. See
+   [`docs/BUILD.md`](docs/BUILD.md).
 
 The bridge turns the four beacons into an aim point with a **4-corner homography**:
 the dots the camera reports *are* the screen rectangle seen down the barrel, so the
 aim point is where the centre of the camera image falls inside it — which handles
 distance, angle and gun tilt without any calibration step. It needs all four dots
 at once, and the camera's view is narrow (~33°), so there is a minimum playing
-distance — about 2 m for a 27" monitor, 4 m for a 55" TV, since aiming into one
-corner pushes the opposite one out of frame ([`docs/BUILD.md`](docs/BUILD.md) has
-the table). On fewer than four dots it drops back to the old centroid guess: the
+distance — about 2 m for a 27" monitor and 4.3 m for a 55" TV with the beacons on
+the picture's corners, since aiming into one corner pushes the opposite one out of
+frame ([`docs/BUILD.md`](docs/BUILD.md) has the table). The distance follows the
+width of the beacon rectangle, so `[scene] scale` shrinks the picture (and the
+rectangle with it) to bring a TV within reach of a sofa. On fewer than four dots it drops back to the old centroid guess: the
 crosshair keeps moving, but it is no longer screen-referenced.
 
 ### To check on the next run
@@ -125,13 +162,15 @@ comes out:
       game (or a tool), wait for `# BT init...`, and only then press SYNC or A/1+2.
       A hardware fix if it becomes annoying: a 10 µF capacitor from EN to GND, or
       cut the auto-reset trace and flash with the BOOT button instead.
-- [ ] **Do the beacons and the picture line up?** The LEDs go on the corners of
-      the *physical screen*; the picture inside it is smaller, because the pixel
-      art is scaled by a whole number and centred (1280×915 inside 1470×956 on
-      this Mac — bars of 6.5% down the sides, 2.1% top and bottom), and the
-      frontend converts display coordinates to picture coordinates itself. If the
-      LEDs had to go on some other rectangle, describe it to the firmware with
-      `BEACON_CX/CY/W/H` ([`docs/BUILD.md`](docs/BUILD.md)).
+- [ ] **Do the beacons and the picture line up?** The picture is smaller than the
+      display, because the pixel art is scaled by a whole number and centred
+      (1280×915 inside 1470×956 on this Mac — bars of 6.5% down the sides, 2.1%
+      top and bottom; the game prints the rectangle it chose at startup).
+      `[gun] frame` says which rectangle the LEDs are actually on — `"picture"`
+      for its corners (nothing to measure, and it plays the same on any display),
+      `"display"` for the screen's, which the frontend then converts. An
+      in-between rectangle goes in `beacon_w/h` and `beacon_cx/cy`
+      ([`docs/BUILD.md`](docs/BUILD.md)).
 
 - [ ] **Does the crosshair reach the screen edges in fullscreen?** `pygame_app.py`
       now converts gun coordinates from display fractions to scene fractions, so the
@@ -329,7 +368,8 @@ the game always runs.
 | `tools/slice_spritesheet.py` | slicing the NES sprite sheet into `assets/sprites/` |
 | `tools/slice_backgrounds.py` | slicing the NES background sheet into `assets/backgrounds/` |
 | `tools/wiimote_monitor.py` | watching the raw `x,y,b` stream while debugging the gun |
-| `tools/ir_view.py` | drawing what the camera sees (the four blobs, the quad, the aim) and logging a test run to `logs/` |
+| `tools/ir_view.py` | drawing what the camera sees (the four blobs, the quad, the aim), logging a test run to `logs/`, `--plan`: where to tape the beacons and how far back to stand, `--bezel`: the `[gun]` numbers for beacons on the bezel |
+| `tools/fake_gun.py` | the gun's UDP stream without the gun — testing the aim, the crosshair and the hits from a known aim point |
 | `docs/BUILD.md` | BOM, wiring and assembly of the hardware |
 | `docs/TODO.md` | what is left to do on the gun and the game, most useful first |
 | `docs/LEADERBOARD.md` | the plan for the leaderboard server and its console board |

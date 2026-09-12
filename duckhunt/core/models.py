@@ -40,3 +40,19 @@ class Duck:
     def contains(self, px: float, py: float) -> bool:
         """Is the aim point (px, py) inside the duck's hitbox?"""
         return self.x <= px <= self.x + self.w and self.y <= py <= self.y + self.h
+
+    def distance_to(self, px: float, py: float) -> float:
+        """How far the aim point is from the hitbox, 0 inside it.
+
+        The usual point-to-rectangle distance: clamp the point onto the rectangle
+        and measure what is left over. In fractions of the playfield, like
+        everything else here — which does mean a screen's width and height count
+        the same, and the ducks are happy with that.
+        """
+        dx = max(self.x - px, 0.0, px - (self.x + self.w))
+        dy = max(self.y - py, 0.0, py - (self.y + self.h))
+        return (dx * dx + dy * dy) ** 0.5
+
+    def hit_by(self, px: float, py: float, radius: float = 0.0) -> bool:
+        """Does a shot at (px, py) with this radius down the duck?"""
+        return self.distance_to(px, py) <= radius

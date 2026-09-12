@@ -57,6 +57,13 @@ def main() -> None:
                     help="receive data from the ESP32 bridge over Wi-Fi/UDP (Path B, port 4210)")
     ap.add_argument("--pygame", action="store_true",
                     help="graphical pixel mode (ducks + dog) instead of ASCII")
+    ap.add_argument("--log-gun", action="store_true",
+                    help="write the gun stream's own numbers to logs/gun_<time>."
+                         "jsonl once a second (rate, clumping, dropouts, fps) — "
+                         "read it back with tools/ir_view.py --trend")
+    ap.add_argument("--align", action="store_true",
+                    help="start with targets in the picture's corners, to tape the "
+                         "four IR beacons to (TAB toggles them in game)")
     ap.add_argument("--settings", metavar="FILE",
                     help="settings file (settings.toml in the project root by default)")
     args = ap.parse_args()
@@ -79,7 +86,7 @@ def main() -> None:
     # ---- pixel frontend (pygame) ----
     if args.pygame:
         from duckhunt.frontends.pygame_app import PygameFrontend
-        game = PygameFrontend(settings)
+        game = PygameFrontend(settings, align=args.align, log_gun=args.log_gun)
         try:
             game.run(gun)          # gun=None -> aim with the mouse
         finally:

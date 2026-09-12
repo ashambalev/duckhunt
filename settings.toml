@@ -23,6 +23,11 @@ points = 1            # points per duck downed: 1 point = 1 duck
 speedup = 1.0         # 1.0 — a steady pace all round; 0.99 — speeds up towards the end
 min_interval = 0.5    # the pace stops growing once the pause gets this short
 
+# The round no longer starts by itself: the intro waits for the trigger (SPACE
+# works too), and then this many seconds count down before the first duck — time
+# to get the gun up and settled. 0 starts immediately.
+countdown = 5.0
+
 [duck]
 # Duck size. This is both the hitbox (used for hit detection) and the sprite size:
 # the image is scaled up by a whole number of times to reach this width, so the
@@ -50,3 +55,86 @@ background = "meadow"
 # by a whole number of times, so black bars are left at the edges — an NES picture
 # cannot be stretched across a wide monitor without warping the pixels anyway.
 fullscreen = true
+
+# How the picture is fitted to the screen:
+#   "height"  — as tall as the screen, aspect kept, bars on the sides only. The
+#               art pixels then land on a non-whole number of display pixels, so
+#               some come out a pixel bigger than others; the scaling is still
+#               nearest-neighbour, so nothing is blurred. On a 16:9 screen this
+#               is 79% x 100% of it against 67% x 85% for the whole-number fit —
+#               the ducks come out about a fifth bigger, and it plays better.
+#   "integer" — the pixel-purist fit: every art pixel exactly the same size,
+#               letterboxed on all four sides.
+fit = "height"
+
+# How many display pixels one pixel of the art becomes, for fit = "integer".
+# 0 = as big as fits (7x on
+# a 1440p 27", 11x on a 4K 55"); the size actually chosen is printed at startup.
+# Asking for less deliberately shrinks the picture, and with a light gun that is
+# the DISTANCE knob: the camera must hold all four beacons in frame at once, so
+# you have to stand about 4.8x the width of the beacon rectangle away. Half the
+# scale, half the distance — this is what makes a 55" playable from a sofa rather
+# than from 4 m. Nothing else changes: every size in the game is a fraction of
+# the picture, so the ducks stay the same size relative to it.
+scale = 0
+
+[gun]
+# The shot's radius, as a fraction of the playfield width: a duck falls when its
+# hitbox comes within this of the aim point, not only when it swallows it. The
+# crosshair circle is drawn at exactly this size, so what you see is what you
+# hit, and the nearest duck in range is the one that drops. 0.04 against a duck
+# 0.13 wide roughly triples the area it can be hit in; 0 is the old pinpoint.
+# This one applies to the mouse as well.
+spread = 0.04
+
+# Seconds of aim to extrapolate ahead, to hide the link's own delay. The chain
+# costs ~40-60 ms: the remote reports every ~15 ms, the game reads it once a
+# frame (up to 17 ms), and that frame is shown at the next vsync (another 17).
+# This advances the crosshair along its current velocity by that much time.
+# 0 = off. Try 0.02-0.04; too much overshoots on fast sweeps and adds jitter.
+lead = 0.02
+
+# The rest is the light gun only (the mouse ignores it). The firmware solves the
+# four-beacon homography and reports where the barrel points INSIDE THE BEACON
+# RECTANGLE,
+# 0..1 along its own two axes. This section says what that rectangle is against
+# the game — the one thing that changes when the LEDs move to another screen, so
+# it lives here and not in the firmware (no reflash to swap monitor for TV).
+# Keep the firmware's own BEACON_CX/CY/W/H at 0.5/0.5/1.0/1.0.
+#
+# frame = "picture" — the LEDs are on the corners of the GAME'S PICTURE (the
+#   letterboxed rectangle the ducks fly in, printed at startup). The gun's
+#   numbers are then playfield fractions already and nothing below needs
+#   changing: the same settings play on a 27" monitor and on a 55" TV, and
+#   because the beacon rectangle is smaller than the screen you can stand
+#   ~1.4x closer. Turn the game on and stick each beacon where the picture's
+#   corner actually is.
+# frame = "display" — the LEDs are on the corners of the PHYSICAL screen. The
+#   game then takes the black bars out itself; play fullscreen, because a window
+#   cannot be corrected (we do not know where it sits on screen).
+frame = "display"
+
+# If the LEDs ended up on some other rectangle — a TV frame that forces them
+# wider, a bezel too thin to stick to, one corner blocked — describe it here: its
+# size in widths/heights of that frame, and its centre as a fraction of it. LEDs
+# spanning 68 cm across a 60 cm picture with frame = "picture" is
+# beacon_w = 68/60 = 1.13. Getting these wrong does not break the aim, it skews
+# it by a constant: the crosshair reaches the edge early, or never quite does.
+#
+# The rectangle must not be SMALLER than the picture, though (beacon_w below 1
+# with frame = "picture"): the firmware clamps the aim to the beacon rectangle
+# itself, so aiming past a beacon sticks there and the picture's outer band
+# becomes unreachable. To play closer, shrink the picture with [scene] scale and
+# keep the beacons on its corners.
+# Measured for the 27": the beacons are on the bezel, 1 cm of it above the screen
+# and 2 cm below, so the LED centres sit ~5 mm above the top edge, ~10 mm below
+# the bottom and ~5 mm outside each side. That is a rectangle 1.7% wider and 4.5%
+# taller than the screen, sitting 0.7% of the height low — which is what these
+# four numbers say. Re-run the calculator if the LEDs end up elsewhere:
+#
+#   .venv/bin/python tools/ir_view.py --bezel 5 5 10 5 --diagonal 27
+#                                   # top right bottom left, in mm, on that screen
+beacon_w = 1.017
+beacon_h = 1.045
+beacon_cx = 0.5
+beacon_cy = 0.507

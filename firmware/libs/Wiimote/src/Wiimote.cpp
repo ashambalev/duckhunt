@@ -286,6 +286,20 @@ static void process_command_complete_event(uint8_t len, uint8_t* data){
       log_d("reset failed.");
     }
   }else
+  if(data[1]==0x05 && data[2]==0x14){ // read_rssi
+    if(data[3]==0x00 && len >= 7){
+      int8_t rssi = (int8_t)data[6];
+      _singleton->_callback(WIIMOTE_EVENT_RSSI,
+                            (uint16_t)(data[4] | (data[5] << 8)), (uint8_t*)&rssi, 1);
+    }
+  }else
+  if(data[1]==0x03 && data[2]==0x14){ // read_link_quality
+    if(data[3]==0x00 && len >= 7){
+      uint8_t q = data[6];
+      _singleton->_callback(WIIMOTE_EVENT_LINK_QUALITY,
+                            (uint16_t)(data[4] | (data[5] << 8)), &q, 1);
+    }
+  }else
   if(data[1]==0x09 && data[2]==0x10){ // read_bd_addr
     // data[0] Num_HCI_Command_Packets
     if(data[3]==0x00){ // OK
@@ -1242,6 +1256,40 @@ void Wiimote::set_report_mode(uint16_t handle, uint8_t mode, bool cont){
 
 void Wiimote::set_rumble(uint16_t handle, bool rumble){
   _set_rumble(handle, rumble);
+}
+
+// --- Duck Hunt patch: ask for a status report -------------------------------
+// Output report 0x15. The remote answers with report 0x20, whose last byte is
+// the battery level — and nothing else in this library ever asks, so without
+// this the level is simply never known. Tired AA cells are the first suspect
+// whenever the link starts dropping data, so it is worth being able to look.
+static void _request_status(uint16_t connection_handle){
+  int idx = l2cap_connection_find_by_psm(connection_handle, PSM_HID_Interrupt_13);
+  struct l2cap_connection_t l2cap_connection = l2cap_connection_list[idx];
+
+  uint8_t  packet_boundary_flag = 0b10;
+  uint8_t  broadcast_flag       = 0b00;
+  uint16_t channel_id           = l2cap_connection.remote_cid;
+  uint8_t data[] = { 0xA2, 0x15, 0x00 };
+  uint16_t len = make_acl_l2cap_single_packet(tmp_data, connection_handle,
+                                              packet_boundary_flag, broadcast_flag,
+                                              channel_id, data, 3);
+  _queue_data(_tx_queue, tmp_data, len);
+  log_d("queued acl_l2cap_single_packet(Request status)");
+}
+
+void Wiimote::request_status(uint16_t handle){
+  _request_status(handle);
+}
+
+void Wiimote::read_rssi(uint16_t handle){
+  uint16_t len = make_cmd_read_rssi(tmp_data, handle);
+  _queue_data(_tx_queue, tmp_data, len);
+}
+
+void Wiimote::read_link_quality(uint16_t handle){
+  uint16_t len = make_cmd_read_link_quality(tmp_data, handle);
+  _queue_data(_tx_queue, tmp_data, len);
 }
 
 void Wiimote::disconnect(uint16_t handle){
