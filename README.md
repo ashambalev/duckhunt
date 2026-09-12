@@ -49,18 +49,41 @@ python3 main.py --pygame --serial /dev/tty.usbserial-0001    # aim with the ligh
 ```bash
 ls /dev/tty.usbserial*                                       # find the bridge (usually -0001)
 python3 main.py --pygame --serial /dev/tty.usbserial-0001    # play
-#   Remote already paired? It just works — the game opens the port without
-#   rebooting the bridge. Otherwise press the red SYNC button on the remote.
+#   Then press 1 and 2 together on the remote. If the gun was in use a moment
+#   ago, not even that: the bridge pages it by address and it comes back on its
+#   own. The red SYNC button under the battery cover is not needed any more.
 ```
+
+**Connecting the remote** takes one press of **1+2**, at any point after the game
+has started — there is no window to hit. Opening the serial port still reboots the
+bridge (the macOS CH340 driver pulls the reset line whatever pyserial asks), so the
+bridge comes up fresh every time; what changed is that it no longer sits deaf after
+one 12.8 s scan, and it no longer needs the SYNC button to pair:
+
+- it **pages the last remote it used** first, by address out of its flash — a remote
+  that is merely awake (which it is for a while after the bridge reboots under it)
+  answers that without any button at all;
+- then it **scans** for a remote made discoverable by **1+2** (or by SYNC), in rounds,
+  for as long as nothing is connected;
+- then it **holds the radio quiet** for a few seconds, which is the window a remote
+  needs to page the bridge itself — any button, on a remote that was paired
+  SYNC-style and so remembers it.
 
 **If the remote will not connect**, it is almost always one of these:
 
-- **SYNC pressed too early.** The board only hears it after it prints `# BT init...`;
-  a press during boot goes nowhere and burns the remote's ~20 s pairing window.
+- **The remote went to sleep.** It only stays discoverable for ~20 s after 1+2;
+  press it again and watch for `# new remote` on the port.
 - **No `--serial` on the command line.** Without it the game runs on the mouse and
   ignores the gun completely, which looks exactly like a dead remote.
 - **Tired batteries.** The remote pairs happily and then drops the link a few seconds
   later under continuous IR reporting.
+
+The bridge says which of the three ways of pairing it is trying (`# new remote,
+trying: ...`) and remembers the one that worked in flash, so the guessing happens
+once. Two one-letter commands on the same serial port drive it by hand: **`p`**
+pairs SYNC-style on the next connection — the only kind the *remote* stores, after
+which any button on it reconnects — and **`f`** makes the bridge forget the remote
+it knows.
 
 Watch what the bridge itself is saying with `tools/wiimote_monitor.py` — it prints the
 firmware's `# ...` status lines, so you can see whether the remote is pairing at all
@@ -129,12 +152,11 @@ picture's corners to aim at and check the numbers.
 
 1. Flash `firmware/esp32_wiimote_bridge/` onto an ESP32-WROOM-32U (Arduino, with
    `--libraries firmware/libs` so the patched `Wiimote` library is picked up).
-2. Plug the ESP32 into the Mac over USB. **Start the game first, wait ~3 seconds,
-   and only then press the red SYNC button** under the remote's battery cover:
-   opening the serial port reboots the ESP32, and a SYNC pressed while it is still
-   booting is simply not heard (it prints `# BT init...` when it is ready to listen).
-   Pairing then takes well under a second. The board prints its progress as `# ...`
-   lines on the same serial port — the game's parser ignores them.
+2. Plug the ESP32 into the Mac over USB. **Start the game, then press 1+2 on the
+   remote** — no rush, and no need to reach the SYNC button under the battery
+   cover, which is the point: the remote lives inside the gun shell. The board
+   prints its progress as `# ...` lines on the same serial port — the game's
+   parser ignores them.
 3. Stick the four IR LEDs down and say where they ended up, in `[gun]`:
    on the corners of the **game's picture** (`frame = "picture"` — nothing to
    measure, `--align` puts targets there, and it plays the same on any screen), or
@@ -157,19 +179,69 @@ crosshair keeps moving, but it is no longer screen-referenced.
 
 ### To check on the next run
 
-Two changes are in the code but have never been exercised against the hardware —
-the board was unplugged when they were written. Worth a look the next time the gun
-comes out:
+Some of what follows is in the code but has never been exercised against the
+hardware — the board was unplugged when it was written. Worth a look the next time
+the gun comes out:
 
 - [x] **Does the remote stay paired across game launches? No — measured, it does
       not.** `input/serial_gun.py` sets DTR/RTS false before opening, and the bridge
       still reboots on every open: the port comes up printing the ESP32's ROM log
       and `rst:0x1 (POWERON_RESET)`, twice out of two attempts. The macOS CH340
       driver drives the lines during `open()` whatever pyserial asks for, so the
-      EN pin gets pulled anyway. **The SYNC-after-launch dance stays**: start the
-      game (or a tool), wait for `# BT init...`, and only then press SYNC or A/1+2.
-      A hardware fix if it becomes annoying: a 10 µF capacitor from EN to GND, or
-      cut the auto-reset trace and flash with the BOOT button instead.
+      EN pin gets pulled anyway. A hardware fix if the reboot itself ever matters:
+      a 10 µF capacitor from EN to GND, or cut the auto-reset trace and flash with
+      the BOOT button instead. What the reboot *cost* — the SYNC-after-launch
+      dance — is dealt with in the firmware instead, in the item below.
+
+- [x] **Does 1+2 connect the remote now, and does it come back by itself? Yes to
+      both — measured.** A 1+2 press connected on the first attempt, by the first
+      strategy the bridge tries (no authentication at all), 1.7 s after the press:
+      `# new remote, trying: no authentication` -> `# Remote connected` ->
+      `# stored for next time: remote 00:1B:7A:23:88:42`. Then the port was closed
+      and reopened, which is exactly what starting the game does and which reboots
+      the bridge: the gun was back **5.6 s later with nothing pressed**, and again
+      on every launch after that. 70-98 reports/s either way, RSSI -39 to -50 dBm,
+      quality 205-216/255, no drops in 130 s. A full round with the gun scored 81
+      of 100 ducks at 75%, which is the whole chain working.
+
+      *Which* of the three ways back it was, the logs do not yet say — and the
+      honest reading is that it was not the bridge's own paging. Only an outgoing
+      connection raises `WIIMOTE_EVENT_NEW`, and no reconnect printed the
+      `# new remote` line that goes with it, so the remote was calling the bridge:
+      it still remembers this ESP32 from the SYNC pairings of the old firmware,
+      and page scan has always been on, so it comes home by itself. The bridge now
+      prints which side placed the call (`Remote connected (the bridge called it)`
+      against `(it called the bridge)`), so the next log settles it. It matters for
+      a remote that has never been SYNC-paired to this bridge: that one has nothing
+      to call back, and the direct page is what would have to carry it.
+      So the SYNC button was never needed for anything: the remote is happy to be
+      connected to without pairing, and the old firmware was insisting on a PIN
+      built from the bridge's address — which is only what the SYNC button asks
+      for. The three things that had to change, all in
+      `firmware/esp32_wiimote_bridge/` and the vendored `Wiimote` library:
+
+      - **The PIN.** The remote asks for a different one depending on which button
+        opened its window — SYNC wants the *bridge's* bluetooth address, 1+2 wants
+        the *remote's own* — and the library only ever answered with the bridge's.
+        A 1+2 press therefore got all the way to authentication and was hung up
+        on, which is exactly the reported symptom. The bridge now tries, in turn,
+        no authentication at all (what a 1+2 connection normally wants), then the
+        remote's address, then the bridge's, and keeps whichever worked in flash.
+        A wrong guess costs one retry.
+      - **The window.** The old sketch scanned exactly once, for the 12.8 s after
+        boot, and then sat deaf: a press that came later did nothing at all. It
+        now scans in rounds for as long as nothing is connected.
+      - **The address.** A remote is only discoverable for ~20 s after a button
+        press, but it stays *connectable* while it is awake. The address of the
+        last remote that worked goes into flash and every round starts by paging
+        it directly, so a game restarted promptly should find the gun with no
+        press at all.
+
+      The other two strategies have therefore never run against the hardware —
+      they are the fallback for a remote that does want a PIN. `p` on the serial
+      port forces the SYNC-style pairing (the only one the *remote* stores, after
+      which any button on it reconnects); `f` makes the bridge forget what it
+      knows, which is the way to replay the first connection from scratch.
 - [ ] **Do the beacons and the picture line up?** The picture is smaller than the
       display, because the pixel art is scaled by a whole number and centred
       (1280×915 inside 1470×956 on this Mac — bars of 6.5% down the sides, 2.1%

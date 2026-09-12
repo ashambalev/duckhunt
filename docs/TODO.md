@@ -151,8 +151,11 @@ Worth doing when the dropouts are fixed and the number still annoys:
   reporting, re-pairing itself in under a second. Fresh AA cells first; the
   summary counts the drops.
 - **Opening the serial port reboots the bridge** — the macOS CH340 driver drives
-  the reset line whatever pyserial asks, so the SYNC-after-launch dance stays. A
-  10 µF capacitor from EN to GND would end it.
+  the reset line whatever pyserial asks. A 10 µF capacitor from EN to GND would
+  end it. The reboot itself is now harmless, and measured so: the bridge pages
+  the remote it used last time out of flash and has it back 5.6 s after boot with
+  nothing pressed, and failing that it scans in rounds until 1+2 is pressed. The
+  SYNC-after-launch dance is gone.
 - **The camera is at its most sensitive setting.** If a bright room starts
   inventing dots, the gentler register block is one commented line below it in
   the firmware.

@@ -122,6 +122,47 @@ static void requested_connection_clear(void){
   requested_connection_list_size = 0;
 }
 
+/**
+ * Duck Hunt patch: which remote is behind a connection handle
+ * ----------------------------------------------------------
+ * The library learns the remote's bluetooth address when the HCI connection
+ * completes, but the sketch above only ever sees a handle. It needs the address
+ * to remember the remote across reboots and page it directly next time, instead
+ * of waiting for an inquiry to rediscover it.
+ */
+struct handle_addr_t {
+  uint16_t  handle;
+  bd_addr_t bd_addr;
+};
+#define HANDLE_ADDR_LIST_SIZE 8
+static handle_addr_t handle_addr_list[HANDLE_ADDR_LIST_SIZE];
+static int handle_addr_list_size = 0;
+static int handle_addr_find(uint16_t handle){
+  for(int i=0; i<handle_addr_list_size; i++){
+    if(handle_addr_list[i].handle == handle){ return i; }
+  }
+  return -1;
+}
+static void handle_addr_add(uint16_t handle, struct bd_addr_t *bd_addr){
+  int idx = handle_addr_find(handle);
+  if(0 <= idx){
+    handle_addr_list[idx].bd_addr = *bd_addr;
+    return;
+  }
+  if(HANDLE_ADDR_LIST_SIZE == handle_addr_list_size){ return; }
+  handle_addr_list[handle_addr_list_size].handle  = handle;
+  handle_addr_list[handle_addr_list_size].bd_addr = *bd_addr;
+  handle_addr_list_size++;
+}
+static void handle_addr_remove(uint16_t handle){
+  int idx = handle_addr_find(handle);
+  if(idx < 0){ return; }
+  for(int i=idx+1; i<handle_addr_list_size; i++){
+    handle_addr_list[i-1] = handle_addr_list[i];
+  }
+  handle_addr_list_size--;
+}
+
  /**
  * Scanned device list
  */
@@ -694,6 +735,18 @@ static void process_connection_complete_event(uint8_t len, uint8_t* data){
   log_d("  Link_Type          = %02X", lt);
   log_d("  Encryption_Enabled = %02X", ee);
 
+  // Duck Hunt patch: a connection that did NOT complete has no handle to talk
+  // to — paging a remote that is asleep or out of range ends here, with a page
+  // timeout (status 0x04). Opening an L2CAP channel on that handle wedged the
+  // bridge until the next reset, and direct paging makes it a routine event.
+  if (status != 0x00) {
+    requested_connection_remove(&bd_addr);
+    log_d("connection_complete failed, dropped the request.");
+    return;
+  }
+
+  handle_addr_add(connection_handle, &bd_addr);
+
   // Check to see if we requested this connection
   if (requested_connection_find(&bd_addr) >= 0) {
     _l2cap_connect(connection_handle, PSM_HID_Control_11, _g_local_cid++);
@@ -713,7 +766,20 @@ static void process_disconnection_complete_event(uint8_t len, uint8_t* data){
   log_d("  Connection_Handle  = 0x%04X", ch);
   log_d("  Reason             = %02X", reason);
 
+  handle_addr_remove(ch);
+
   _singleton->_callback(WIIMOTE_EVENT_DISCONNECT, ch, NULL, 0);
+}
+
+// Duck Hunt patch: how the pairing ended. Event 0x06 = [status, handle_lo,
+// handle_hi]; a non-zero status means the remote refused the PIN we answered
+// with, so the sketch can try the other one instead of guessing forever.
+static void process_authentication_complete_event(uint8_t len, uint8_t* data) {
+  if (len < 3) { return; }
+  uint8_t status = data[0];
+  uint16_t handle = (data[2] << 8) | data[1];
+  log_d("authentication_complete status=%02X handle=%04X", status, handle);
+  _singleton->_callback(WIIMOTE_EVENT_AUTH_COMPLETE, handle, &status, 1);
 }
 
 static void process_link_key_request_event(uint8_t len, uint8_t* data) {
@@ -724,20 +790,31 @@ static void process_link_key_request_event(uint8_t len, uint8_t* data) {
   log_d("queued negative link key reply(process_link_key_request)");
 }
 
+// Duck Hunt patch: which address the PIN is built from. Default is the host's,
+// which is what the red SYNC button asks for and what the library always did.
+static wiimote_pin_t _pin_source = WIIMOTE_PIN_HOST;
+
 static void process_pin_request_event(uint8_t len, uint8_t *data) {
   struct bd_addr_t bd_addr;
   STREAM_TO_BDADDR(bd_addr.addr, data);
   uint8_t pin_data[6];
 
-  // The pin is the mac of the host controller reversed
-  esp_read_mac(pin_data, ESP_MAC_BT);
-  for (size_t i = 0; i < 3; ++i)
-  {
-    uint8_t tmp = pin_data[5 - i];
-    pin_data[5 - i] = pin_data[i];
-    pin_data[i] = tmp;
+  if (_pin_source == WIIMOTE_PIN_REMOTE) {
+    // 1+2 pairing: the PIN is the REMOTE's own address, LSB first — which is
+    // exactly how it arrived on the wire, before STREAM_TO_BDADDR flipped it.
+    memcpy(pin_data, data, 6);
+    log_d("Pin data (remote address)=%s", formatHex(pin_data, 6));
+  } else {
+    // SYNC pairing: the pin is the mac of the host controller reversed
+    esp_read_mac(pin_data, ESP_MAC_BT);
+    for (size_t i = 0; i < 3; ++i)
+    {
+      uint8_t tmp = pin_data[5 - i];
+      pin_data[5 - i] = pin_data[i];
+      pin_data[i] = tmp;
+    }
+    log_d("Pin data (host address)=%s", formatHex(pin_data, 6));
   }
-  log_d("Pin data=%s", formatHex(pin_data, 6));
   uint16_t data_len = make_cmd_pin_reply(tmp_data, bd_addr, pin_data);
   _queue_data(_tx_queue, tmp_data, data_len);
   log_d("queued pin reply(process_pin_request)");
@@ -1087,6 +1164,8 @@ static void process_hci_event(uint8_t event_code, uint8_t len, uint8_t* data){
     process_connection_request_event(len, data);
   }else if(event_code == 0x05){
     process_disconnection_complete_event(len, data);
+  }else if (event_code == 0x06){
+    process_authentication_complete_event(len, data);
   }else if (event_code == 0x17){
     process_link_key_request_event(len, data);
   }else if (event_code == 0x16){
@@ -1317,4 +1396,40 @@ void Wiimote::get_balance_weight(uint8_t *data, float *weight) {
 
 void Wiimote::initiate_auth(uint16_t handle) {
   _initiate_auth(handle);
+}
+
+// --- Duck Hunt patch: pairing without the hidden SYNC button -----------------
+
+void Wiimote::set_pin_source(wiimote_pin_t source){
+  _pin_source = source;
+}
+
+// Page a remote whose address is already known, instead of discovering it with
+// an inquiry first. An inquiry only finds a remote that is advertising itself
+// (the 20 s after SYNC or 1+2); paging reaches one that is merely awake, which
+// is what a remote is right after the bridge reboots under it. Page_Scan_
+// Repetition_Mode R2 is the pessimistic guess — the controller then pages long
+// enough for any of the three modes. A remote that is asleep or out of range
+// answers with a page timeout after ~5 s, handled above.
+void Wiimote::connect(const uint8_t bd_addr[6]){
+  struct requested_connection_t requested_connection;
+  memcpy(requested_connection.bd_addr.addr, bd_addr, BD_ADDR_LEN);
+  if(requested_connection_find(&requested_connection.bd_addr) < 0){
+    requested_connection_add(requested_connection);
+  }
+
+  uint16_t pt    = 0x0008;   // DM1, as in the inquiry path
+  uint8_t  psrm  = 0x02;     // R2
+  uint16_t clkofs = 0x0000;  // unknown
+  uint8_t  ars   = 0x00;     // no role switch
+  uint16_t len = make_cmd_create_connection(tmp_data, requested_connection.bd_addr, pt, psrm, clkofs, ars);
+  _queue_data(_tx_queue, tmp_data, len);
+  log_d("queued create_connection(direct).");
+}
+
+bool Wiimote::get_address(uint16_t handle, uint8_t out[6]){
+  int idx = handle_addr_find(handle);
+  if(idx < 0){ return false; }
+  memcpy(out, handle_addr_list[idx].bd_addr.addr, BD_ADDR_LEN);
+  return true;
 }

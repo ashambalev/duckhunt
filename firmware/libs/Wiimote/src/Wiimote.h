@@ -14,7 +14,26 @@ enum wiimote_event_type_t {
   // --- Duck Hunt patch: radio link diagnostics. data[0] carries the value:
   // RSSI as a SIGNED byte, link quality as 0..255 (bigger is better).
   WIIMOTE_EVENT_RSSI,
-  WIIMOTE_EVENT_LINK_QUALITY
+  WIIMOTE_EVENT_LINK_QUALITY,
+  // --- Duck Hunt patch: how the pairing attempt ended. data[0] is the HCI
+  // status, 0x00 = paired. Anything else means the PIN was not the one this
+  // remote was waiting for (see wiimote_pin_t), and the remote drops the link.
+  WIIMOTE_EVENT_AUTH_COMPLETE
+};
+
+// --- Duck Hunt patch: which PIN answers the controller's PIN request ---------
+// The Wii Remote asks for a different PIN depending on which button put it in
+// discoverable mode, and gets no say in it afterwards:
+//   red SYNC button  -> the PIN is the HOST's bluetooth address (LSB first),
+//                       and the remote stores the host, so pressing A later
+//                       reconnects it on its own.
+//   1 + 2 together   -> the PIN is the REMOTE's OWN address (LSB first), and
+//                       nothing is stored: it is a one-off connection.
+// Answering with the wrong one fails authentication and the remote hangs up,
+// which is exactly what "SYNC works but 1+2 does not" looks like.
+enum wiimote_pin_t {
+  WIIMOTE_PIN_HOST,
+  WIIMOTE_PIN_REMOTE
 };
 
 enum balance_position_type_t {
@@ -38,6 +57,10 @@ class Wiimote {
     void get_balance_weight(uint8_t *data, float *weight);
     void initiate_auth(uint16_t handle);
     void disconnect(uint16_t handle);
+    // --- Duck Hunt patch: pairing that does not need the hidden SYNC button ---
+    void set_pin_source(wiimote_pin_t source);       // which PIN to answer with
+    void connect(const uint8_t bd_addr[6]);          // page a known remote directly
+    bool get_address(uint16_t handle, uint8_t out[6]);  // who is behind a handle
     // --- Duck Hunt patch: enable the IR camera and send 0x33 reports with 4 dots ---
     void enable_ir(uint16_t handle);                 // all at once (may be too fast)
     // Granular steps for enabling IR STEP BY STEP with pauses (more reliable):

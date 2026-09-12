@@ -16,6 +16,28 @@ C--power off-->D
 P1--disconnect all-->D
 ```
 
+### Duck Hunt fork
+
+This copy is patched for the Duck Hunt light gun. On top of the upstream library:
+
+- `enable_ir()` and the granular `ir_send_report()` / `ir_write_register()` /
+  `set_report_mode()` steps — the IR camera and report 0x33 with four dots.
+- `read_rssi()` / `read_link_quality()` and their events, for telling a weak
+  signal apart from interference when the report rate sags.
+- `set_pin_source()`. The remote asks for a different PIN depending on which
+  button made it discoverable: the red SYNC button wants the *host's* bluetooth
+  address (LSB first) and makes the remote store the host, while **1+2** wants
+  the *remote's own* address and stores nothing. Upstream only ever answers with
+  the host's, so a 1+2 press fails authentication and the remote hangs up.
+- `WIIMOTE_EVENT_AUTH_COMPLETE`, so the sketch can see that failure and try the
+  other PIN instead of guessing.
+- `connect(bd_addr)`, which pages a known remote directly instead of waiting for
+  an inquiry to rediscover it — an inquiry only finds a remote inside its ~20 s
+  discoverable window, paging reaches one that is merely awake. A page that times
+  out (an asleep or absent remote) is now dropped cleanly; before, the failed
+  connection's handle was used for L2CAP anyway.
+- `get_address(handle)`, so the sketch can remember which remote that was.
+
 ### Notes
 
 1. Pairing is only stored on the wiimote when using the red-sync button, pairing by pressing 1 & 2 is not saved.

@@ -16,8 +16,9 @@ Running it:
 How to use it:
   1. Start the monitor — the ESP32 will reboot (that is fine) and you will see
      "BT init".
-  2. Press the red SYNC button on the Wii Remote (under the cover). Wait for
-     "Remote connected" and "IR camera enabled".
+  2. Press 1 and 2 together on the Wii Remote. Wait for "Remote connected" and
+     "IR camera enabled". A remote the bridge has already used is paged by
+     address first, so it may connect before you press anything.
   3. Point the remote at a TV remote control (and HOLD one of its buttons) — the
      IR line should show coordinates instead of "no dot". Pull the trigger and
      you will see FIRE.
@@ -41,7 +42,7 @@ def main() -> None:
     s = serial.Serial(PORT, BAUD, timeout=0.2)
     s.setDTR(False)
     s.setRTS(False)
-    print(f"Listening on {PORT} @ {BAUD}. Press SYNC on the remote. Ctrl-C quits.\n")
+    print(f"Listening on {PORT} @ {BAUD}. Press 1+2 on the remote. Ctrl-C quits.\n")
 
     seen_point = False
     last_status = time.time()

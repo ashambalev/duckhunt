@@ -15,13 +15,14 @@
  * so the occasional status messages below (sent on the same Serial) do not
  * bother it.
  *
- * Pairing: plug the ESP32 in over USB, then press the red SYNC button on the
- * remote (under the cover) for the FIRST pairing; after that the A or 1+2 buttons
- * are enough.
+ * Getting connected: press 1+2 on the remote (or any button if the bridge has
+ * seen it before). The red SYNC button under the battery cover still works, but
+ * nothing needs it any more — see the pairing block further down.
  */
 
 #include <Arduino.h>
 #include <math.h>
+#include <Preferences.h>
 #include <Wiimote.h>
 
 Wiimote   wii;
@@ -30,6 +31,158 @@ static uint16_t g_handle = 0;
 // One IR blob in the camera's own 1024x768 space. Declared up here because
 // the Arduino preprocessor writes its function prototypes above the sketch.
 struct Dot { float x, y; int size; };   // size: the blob's extent, 0..15
+
+
+// ---- Getting the remote connected, without the hidden SYNC button -----------
+// The remote lives inside the gun shell, where the red SYNC button under its
+// battery cover cannot be reached without taking the thing apart — and the
+// bridge reboots every time the Mac opens the serial port, so this happened at
+// the start of every session. Three separate things had to change for 1+2 (or
+// no button at all) to do the same job:
+//
+//  1. THE PIN. The remote asks for a different one depending on which button
+//     opened the window: SYNC wants the bridge's own bluetooth address, 1+2
+//     wants the remote's. The library only ever answered with the bridge's, so
+//     a 1+2 press got as far as authentication and was then hung up on. The
+//     bridge now tries, in turn, no authentication at all (which is what a 1+2
+//     connection normally wants), then the remote's address, then the bridge's,
+//     and remembers in flash whichever worked. Wrong guesses cost a few seconds
+//     and fix themselves; the remote stays discoverable for ~20 s per press.
+//  2. THE WINDOW. The old firmware scanned once, for 12.8 s after boot, and
+//     then sat deaf forever: a press that came later than that did nothing,
+//     which is most of why "press SYNC at exactly the right moment" was the
+//     ritual. Scanning now runs in rounds, for as long as nothing is connected.
+//  3. THE ADDRESS. A remote is only *discoverable* in those 20 s after a button
+//     press, but it stays *connectable* for as long as it is awake — including
+//     the seconds right after the bridge has rebooted under it. So the address
+//     of the last remote that worked goes into flash, and every round starts by
+//     paging that address directly. Start the game quickly enough and the gun
+//     is simply there, with no button pressed at all.
+//
+// 'p' on the serial port forces the SYNC-style pairing (the one the remote
+// stores, so pressing A alone reconnects it), 'f' forgets the stored remote.
+static Preferences prefs;
+
+enum pair_mode_t : uint8_t {
+  PAIR_NONE = 0,      // connect without authenticating — the usual 1+2 case
+  PAIR_REMOTE_PIN,    // authenticate with the remote's own address (1+2)
+  PAIR_HOST_PIN,      // authenticate with the bridge's address (SYNC; stored)
+  PAIR_MODE_COUNT
+};
+static const char* pair_mode_name(uint8_t m) {
+  switch (m) {
+    case PAIR_NONE:       return "no authentication";
+    case PAIR_REMOTE_PIN: return "PIN = the remote's address (1+2)";
+    default:              return "PIN = the bridge's address (SYNC, remote stores us)";
+  }
+}
+static uint8_t       g_pair_mode    = PAIR_NONE;
+static bool          g_attempt_open = false;   // a connection attempt, no data yet
+static unsigned long g_attempt_ms   = 0;
+static uint16_t      g_attempt_handle = 0;
+static uint8_t       g_remote_addr[6];
+static bool          g_have_addr    = false;   // ... and it is worth paging
+static bool          g_addr_saved   = false;   // already written to flash
+
+// The reconnect ladder, stepped from loop(): page the remote we know, then an
+// inquiry round for a remote pressing 1+2, then a quiet window in which the
+// radio is free for a remote that is paging US (any button on a remote that
+// remembers the bridge). Repeats until something connects.
+static uint8_t       g_recon_step   = 0;
+static unsigned long g_recon_until  = 0;
+static bool          g_scanning     = false;
+// Nothing may be queued before the stack has finished its own boot chain
+// (reset -> read_bd_addr -> name -> class -> scan_enable). The first build of
+// this ladder started an inquiry from the very first loop(), which went out in
+// the middle of that chain and left a second inquiry refused as "disallowed".
+static bool          g_bt_ready     = false;
+static const unsigned long PAGE_MS    = 7000;   // ~5 s page timeout plus slack
+static const unsigned long INQUIRY_MS = 14000;  // the inquiry itself is 12.8 s
+static const unsigned long QUIET_MS   = 3000;
+static const unsigned long ATTEMPT_MS = 6000;   // connect -> first report
+
+static bool timer_done(unsigned long deadline) {
+  return (long)(millis() - deadline) >= 0;
+}
+
+static void print_remote() {
+  if (g_have_addr) {
+    Serial.printf("# remote: %02X:%02X:%02X:%02X:%02X:%02X, pairing by %s\n",
+                  g_remote_addr[0], g_remote_addr[1], g_remote_addr[2],
+                  g_remote_addr[3], g_remote_addr[4], g_remote_addr[5],
+                  pair_mode_name(g_pair_mode));
+  } else {
+    Serial.printf("# no remote stored yet; first try: %s\n", pair_mode_name(g_pair_mode));
+  }
+}
+
+// Whatever connected last time is what to page and how to pair next time.
+static void remember_remote(uint16_t handle) {
+  uint8_t addr[6];
+  if (!wii.get_address(handle, addr)) return;
+  bool same = g_have_addr && memcmp(addr, g_remote_addr, 6) == 0;
+  memcpy(g_remote_addr, addr, 6);
+  g_have_addr = true;
+  if (g_addr_saved && same) return;
+  prefs.putBytes("addr", g_remote_addr, 6);
+  prefs.putUChar("pin", g_pair_mode);
+  g_addr_saved = true;
+  Serial.print("# stored for next time: ");
+  print_remote();
+}
+
+// One attempt did not get as far as a report: step to the next way of pairing.
+// Three modes, so the wrong guess costs at most two retries and then sticks.
+static void attempt_failed(const char* why) {
+  if (!g_attempt_open) return;
+  g_attempt_open = false;
+  g_attempt_handle = 0;
+  uint8_t next = (uint8_t)((g_pair_mode + 1) % PAIR_MODE_COUNT);
+  Serial.printf("# pairing failed (%s) with %s -> next: %s\n",
+                why, pair_mode_name(g_pair_mode), pair_mode_name(next));
+  g_pair_mode = next;
+  g_addr_saved = false;          // the stored mode was not the right one
+}
+
+static void reconnect_tick() {
+  if (!g_bt_ready) return;                                // the stack is still booting
+  if (g_handle) return;                                   // already playing
+  if (g_attempt_open) {                                   // one is in flight
+    if (!timer_done(g_attempt_ms + ATTEMPT_MS)) return;
+    // It never reached WIIMOTE_EVENT_CONNECT (that sets g_handle and returns
+    // above), so there is a half-open link to close before scanning again.
+    uint16_t stale = g_attempt_handle;
+    attempt_failed("no reports came back");
+    if (stale) wii.disconnect(stale);
+  }
+  if (!timer_done(g_recon_until)) return;
+
+  switch (g_recon_step) {
+    case 0:                                               // page the known remote
+      if (g_have_addr) {
+        Serial.print("# paging the remote we used last time... ");
+        Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X\n",
+                      g_remote_addr[0], g_remote_addr[1], g_remote_addr[2],
+                      g_remote_addr[3], g_remote_addr[4], g_remote_addr[5]);
+        wii.connect(g_remote_addr);
+        g_recon_until = millis() + PAGE_MS;
+      }
+      g_recon_step = 1;
+      break;
+    case 1:                                               // look for 1+2 / SYNC
+      status("scanning - press 1+2 on the remote (or SYNC) now.");
+      wii.scan(true);
+      g_scanning = true;
+      g_recon_until = millis() + INQUIRY_MS;
+      g_recon_step = 2;
+      break;
+    default:                                              // quiet: let it page us
+      if (g_scanning) { wii.scan(false); g_scanning = false; }
+      g_recon_until = millis() + QUIET_MS;
+      g_recon_step = 0;
+      break;
+  }
+}
 
 // Rumble recoil: a short pulse of the remote's vibration motor on a trigger pull.
 // Recoil is GONE. The motor lives in the remote and runs off the same two AA
@@ -267,26 +420,58 @@ static void print_axes() {
 static void wiimote_cb(wiimote_event_type_t ev, uint16_t handle, uint8_t* data, size_t len) {
   switch (ev) {
     case WIIMOTE_EVENT_INITIALIZE:
-      status("BT init. Press SYNC (first time) or A/1+2 on the remote...");
-      wii.scan(true);
+      status("BT init. Press 1+2 on the remote (SYNC still works too)...");
+      g_bt_ready    = true;
+      g_recon_step  = 0;           // page the stored remote first, then scan
+      g_recon_until = 0;
       break;
     case WIIMOTE_EVENT_NEW:
-      status("New remote, authenticating...");
-      wii.initiate_auth(handle);
+      // Our own connection reached the remote. Authenticate only if this round
+      // of the ladder calls for it — a plain 1+2 connection wants no PIN at all,
+      // and asking for one with the wrong address is what the remote hangs up on.
+      g_attempt_open   = true;
+      g_attempt_ms     = millis();
+      g_attempt_handle = handle;
+      Serial.printf("# new remote, trying: %s\n", pair_mode_name(g_pair_mode));
+      if (g_pair_mode != PAIR_NONE) {
+        wii.set_pin_source(g_pair_mode == PAIR_HOST_PIN ? WIIMOTE_PIN_HOST
+                                                        : WIIMOTE_PIN_REMOTE);
+        wii.initiate_auth(handle);
+      }
+      break;
+    case WIIMOTE_EVENT_SCAN_STOP:
+      g_scanning = false;          // the inquiry ran out on its own
+      break;
+    case WIIMOTE_EVENT_AUTH_COMPLETE:
+      if (len >= 1 && data[0] != 0x00) {
+        Serial.printf("# authentication refused (status 0x%02X)\n", data[0]);
+        attempt_failed("wrong PIN for the button that was pressed");
+        wii.disconnect(handle);    // do not sit on a link the remote will drop
+      } else {
+        status("authenticated.");
+      }
       break;
     case WIIMOTE_EVENT_CONNECT:
       g_handle = handle;
       g_ir_step = -1;
-      status("Remote connected.");
+      // WHICH side placed the call, because the two look identical afterwards
+      // and they are not the same thing: a remote that was once paired with the
+      // red SYNC button stores the bridge and comes back on its own, which is
+      // indistinguishable in a log from the bridge's own paging working. Only
+      // the outgoing path raises WIIMOTE_EVENT_NEW, so this is the whole test.
+      status(g_attempt_open ? "Remote connected (the bridge called it)."
+                            : "Remote connected (it called the bridge).");
       wii.set_led(handle, 0x01);
-      wii.scan(false);
+      if (g_scanning) { wii.scan(false); g_scanning = false; }
       break;
     case WIIMOTE_EVENT_DISCONNECT:
-      status("Remote disconnected. Waiting for pairing again...");
+      status("Remote disconnected. Waiting for it to come back...");
+      attempt_failed("the remote hung up");
       g_handle = 0;
       g_ir_step = -1;
       g_prev_b = false;
-      wii.scan(true);
+      g_recon_step  = 0;           // page it straight away: it is awake, and
+      g_recon_until = 0;           // paging finds it faster than an inquiry
       break;
     case WIIMOTE_EVENT_RSSI:
       // A fresh connection answers 0 before it has measured anything, and 0 dBm
@@ -297,10 +482,14 @@ static void wiimote_cb(wiimote_event_type_t ev, uint16_t handle, uint8_t* data, 
       if (len >= 1) { g_quality = data[0]; g_link_fresh = true; }
       break;
     case WIIMOTE_EVENT_DATA:
-      // The first report to arrive means the channel is up -> start the IR sequence.
+      // The first report to arrive means the channel is up -> start the IR
+      // sequence, and settles that this way of pairing was the right one.
       if (g_ir_step < 0 && g_handle != 0) {
         status("Channel ready, enabling the IR camera step by step...");
         g_ir_step = 0; g_ir_last = 0;
+        g_attempt_open   = false;
+        g_attempt_handle = 0;
+        remember_remote(handle);
       }
       // Report 0x33: [0]=A1 [1]=33 [2..3]=buttons [4..6]=accel [7..18]=12 IR bytes
       if (len >= 19 && data[1] == 0x33) {
@@ -357,17 +546,30 @@ void setup() {
                 __DATE__, __TIME__, (int)CAM_MIRROR_X, (int)CAM_MIRROR_Y,
                 BEACON_W, BEACON_H, BEACON_CX, BEACON_CY,
                 KEEPALIVE_ON ? "ON" : "off");
+  // What worked last time, kept across the reboot the Mac causes every time it
+  // opens the serial port — which is the whole reason the SYNC dance existed.
+  prefs.begin("duckhunt", false);
+  if (prefs.getBytesLength("addr") == 6) {
+    prefs.getBytes("addr", g_remote_addr, 6);
+    g_have_addr  = true;
+    g_addr_saved = true;
+    g_pair_mode  = prefs.getUChar("pin", PAIR_NONE);
+    if (g_pair_mode >= PAIR_MODE_COUNT) g_pair_mode = PAIR_NONE;
+  }
+  print_remote();
   wii.init(wiimote_cb);
 }
 
 void loop() {
   wii.handle();                                          // services the BT stack
+  reconnect_tick();                                      // page / scan / listen
   ir_sequencer();                                        // step-by-step IR enabling
 
   // One-letter commands on the same port, for the debugging tools:
   //   d = dump the dots on every camera report (tools/ir_view.py wants this)
   //   s = back to twice a second (the default)      o = no dumping at all
   //   k = keep-alive on/off (an output report every 250 ms, no motor)
+  //   p = pair SYNC-style on the next connection   f = forget the stored remote
   while (Serial.available()) {
     switch (Serial.read()) {
       case 'd': g_dump_ms = 0;   g_dump_on = true;  status("dot dump: every report"); break;
@@ -380,7 +582,20 @@ void loop() {
         break;
       case 'x': CAM_MIRROR_X = !CAM_MIRROR_X; print_axes(); break;
       case 'y': CAM_MIRROR_Y = !CAM_MIRROR_Y; print_axes(); break;
-      case '?': print_axes(); break;
+      // 'p' = pair the way the red SYNC button asks for, which is the only way
+      // the REMOTE stores the bridge — after that any button on it reconnects.
+      // Press SYNC, then send 'p' (or the other way round, within the 20 s).
+      case 'p':
+        g_pair_mode  = PAIR_HOST_PIN;
+        g_addr_saved = false;
+        status("next connection pairs SYNC-style; press the red SYNC button now.");
+        break;
+      case 'f':
+        prefs.remove("addr"); prefs.remove("pin");
+        g_have_addr = false; g_addr_saved = false; g_pair_mode = PAIR_NONE;
+        status("forgot the stored remote.");
+        break;
+      case '?': print_axes(); print_remote(); break;
       default: break;                               // newlines and other noise
     }
   }
