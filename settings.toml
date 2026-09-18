@@ -20,11 +20,11 @@
 # high-score table (scores.json). Round length ≈ ducks × interval, i.e. about a
 # minute for 100 × 0.6. ESC stops a round early and still offers the result to
 # the table, so a long round is not a trap.
-ducks = 100           # ducks per round
-interval = 0.6        # pause between launches, seconds
+ducks = 40           # ducks per round
+interval = 0.9        # pause between launches, seconds
 
 points = 1            # points per duck downed: 1 point = 1 duck
-speedup = 1.0         # 1.0 — a steady pace all round; 0.99 — speeds up towards the end
+speedup = 0.99         # 1.0 — a steady pace all round; 0.99 — speeds up towards the end
 min_interval = 0.5    # the pace stops growing once the pause gets this short
 
 # Seconds counted down between "start" and the first duck — time to get the gun
@@ -40,11 +40,10 @@ countdown = 3.0
 # already bigger), whereas the hitbox changes smoothly.
 width = 0.13          # width, fraction of screen width (0.13 ≈ NES proportions)
 height = 0.16         # height, fraction of screen height
-
 # Flight speed: each duck gets a random value between min and max.
 # 0.30–0.55 means a duck crosses the screen in 2–3 seconds (for a one-minute round).
 speed_min = 0.30      # slowest a duck may be, fraction of screen per second
-speed_max = 0.55      # and the fastest
+speed_max = 0.65      # and the fastest
 
 bob = 0.12            # vertical drift, ± fraction of screen per second
 fall_speed = 0.7      # how fast a downed duck falls, fraction of screen per second
@@ -129,6 +128,44 @@ fit = "height"
 # the picture, so the ducks stay the same size relative to it.
 scale = 0
 
+[sound]
+# Three sounds: the gun going off, the duck's quack when it takes the shot, and
+# the dog laughing at the one that got away. The files are assets/sounds/*.wav —
+# synthesized, not sampled, by `python3 tools/make_sounds.py`, so they can be
+# retuned (pitch, decay, formants) by editing that script and running it again.
+#
+# All the volumes are 0..1 and they multiply: a clip plays at `volume` x its own
+# knob. So `volume` is the one to turn down for the room, and the three below it
+# are the balance between them. Nothing here can break a round: if the files are
+# missing or there is no audio device, the game prints one line and plays on in
+# silence.
+enabled = true        # false = a silent game; the files are not even loaded
+volume = 0.7          # master volume
+# The gun sits well below the other two on purpose. All three files are
+# normalised to the same PEAK, but the shot carries ~5.7 dB more energy than the
+# quack through its loudest tenth of a second — and it is the one you hear on
+# every trigger pull, where the quack comes only when you connect. 0.55 puts it
+# about 2 dB UNDER the quack. The bang is the one sound you hear on every single
+# pull, so it is the one that wears you out first — it only has to be audible,
+# not impressive, and the quack is the sound that should cut through it.
+#
+# ON TRIAL: shot.wav is currently NOT the cartridge's Zapper but a real gunshot
+# from Wikimedia Commons (public domain) — a 190 ms crack instead of 300 ms of
+# the NES noise channel. It is a sharp transient with little average energy, so
+# the same perceived level needs a much higher number here than the Zapper's 0.4.
+# Rolling back is two steps: `python3 tools/import_nes_sounds.py` and this back
+# to 0.4.
+shot = 0.85           # the gun, relative to master
+quack = 1.0           # the duck being hit
+laugh = 1.0           # the dog at a miss
+
+# Is the gun heard when you DO hit? true: every pull goes bang and a hit adds the
+# quack on top — the bang is what tells you the trigger was read at all, which is
+# worth having with a light gun three metres from the screen. false: a hit is the
+# quack alone and the bang comes to mean "missed", which is the more informative
+# pair of sounds once you trust the trigger.
+shot_on_hit = true
+
 [gun]
 # The shot's radius, as a fraction of the playfield width: a duck falls when its
 # hitbox comes within this of the aim point, not only when it swallows it. The
@@ -136,14 +173,52 @@ scale = 0
 # hit, and the nearest duck in range is the one that drops. 0.04 against a duck
 # 0.13 wide roughly triples the area it can be hit in; 0 is the old pinpoint.
 # This one applies to the mouse as well.
-spread = 0.04
+spread = 0.02
 
 # Seconds of aim to extrapolate ahead, to hide the link's own delay. The chain
-# costs ~40-60 ms: the remote reports every ~15 ms, the game reads it once a
-# frame (up to 17 ms), and that frame is shown at the next vsync (another 17).
-# This advances the crosshair along its current velocity by that much time.
-# 0 = off. Try 0.02-0.04; too much overshoots on fast sweeps and adds jitter.
-lead = 0.02
+# costs ~40-55 ms: the remote reports every ~10 ms, the radio adds its own, the
+# game reads the port once a frame, and that frame is shown at the next vsync —
+# the last two measured here at 16.67 ms together, of which the drawing itself
+# is under 1 ms, so there is nothing to speed up downstream of the link. This
+# advances the crosshair along its own velocity by that much time instead.
+# 0 = off. Settled by playing, not by simulation. The first run said 0.035 and
+# 0.05 both overshot — but that run had lead_max pinned at 0.06, so every stall
+# in the link (1.5 a second, measured) briefly tripled the lead, and that was
+# the overshoot rather than the lead itself. With lead_max tied to lead and a
+# link that had stopped stalling (0.2 stalls a second instead of 1.5), two full
+# rounds back to back, every duck downed in both, said it plainly:
+#
+#   lead 0.02  ->  46 % of shots hit   (254 shots, the run before)
+#   lead 0.035 ->  73 %                (40 ducks in 55 shots)
+#   lead 0.05  ->  60 %                (40 ducks in 67 shots)
+#
+# The later round is the worse one, so this is not practice talking.
+lead = 0.035
+
+# The ceiling on the above, in seconds. A stalled link leaves the last report
+# standing, and the crosshair is advanced by `lead` PLUS however stale that
+# report is — right while the barrel is still sweeping, wrong if the stall goes
+# on. This is where that stops.
+#
+# Keep it equal to `lead` unless the link is clean. The measured run had ~1.5
+# stalls longer than 50 ms per second, and with lead_max well above lead every
+# one of them briefly multiplied the lead — which is what "the crosshair
+# overshoots" turned out to be, far more than the steady lead was. Simulated
+# against a sweep that decelerates to a stop, with those stalls in it, how far
+# the crosshair sails past the point the barrel stopped at:
+#
+#   lead / lead_max      past the stop     mean error
+#   0    / 0                    0.4 %          4.0 %
+#   0.02 / 0.02                 1.8 %          2.9 %
+#   0.02 / 0.035                3.2 %          2.5 %
+#   0.035/ 0.035                3.2 %          2.2 %   <- here
+#   0.035/ 0.06                 5.5 %          2.1 %   <- what overshot
+#
+# Above lead only pays on a clean link, where a stall is rare enough that
+# coasting through it is worth the odd overshoot. On the link this was measured
+# on, one stall every five seconds, that is arguably true — but the difference
+# it buys is 0.1 % of mean error against 2.3 % more overshoot, so no.
+lead_max = 0.035
 
 # The rest is the light gun only (the mouse ignores it). The firmware solves the
 # four-beacon homography and reports where the barrel points INSIDE THE BEACON

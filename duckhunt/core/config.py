@@ -77,6 +77,33 @@ class DogSettings:
 
 
 @dataclass(frozen=True)
+class SoundSettings:
+    """The three sounds: your shot, the duck's quack when it is hit, and the dog
+    laughing at the one that got away.
+
+    The files are `assets/sounds/*.wav`, made by `tools/make_sounds.py`. The
+    volumes are all 0..1 and multiply: a clip plays at `volume` x its own knob, so
+    `volume` is the one to turn down for the room and the rest are the balance
+    between them (a gunshot three metres from your ear wants to be quieter than a
+    quack needs to be heard). Missing files or no audio device is not an error —
+    the game says so once and plays on in silence.
+    """
+    enabled: bool = True       # false = a silent game, nothing is even loaded
+    volume: float = 0.7        # master volume, 0..1
+    # Below the other two on purpose: the files share a peak, but the shot has
+    # ~5.7 dB more energy than the quack where it is loudest, and it plays on
+    # every trigger pull rather than only on a hit.
+    shot: float = 0.4          # the gun, relative to master
+    quack: float = 1.0         # the duck being hit
+    laugh: float = 1.0         # the dog at a miss
+    # Whether the gun is heard when you DO hit. On: every trigger pull goes bang
+    # and a hit adds the quack on top — the shot is the feedback that the trigger
+    # was read at all, which matters with a light gun. Off: a hit is the quack
+    # alone, and the bang means "missed".
+    shot_on_hit: bool = True
+
+
+@dataclass(frozen=True)
 class SceneSettings:
     # A background name from assets/backgrounds/index.toml, or "random" (a new
     # one each launch), or "none" (a landscape drawn in code). In game the
@@ -139,10 +166,17 @@ class GunSettings:
     # you see is what you hit. 0 = the old pinpoint.
     spread: float = 0.04
     # Seconds of aim to extrapolate ahead, to hide the link's own delay. The
-    # chain costs ~35-50 ms (remote -> bridge -> one frame -> vsync), and this
-    # advances the crosshair along its current velocity by that much. 0 = off;
-    # 0.02-0.04 is the useful range, and too much makes it overshoot and jitter.
+    # chain costs ~40-55 ms (remote -> radio -> bridge -> one frame -> vsync,
+    # the last two measured at 16.7 ms on this Mac), and this advances the
+    # crosshair along its current velocity by that much. 0 = off; 0.02-0.045 is
+    # the useful range, and too much makes it overshoot and jitter.
     lead: float = 0.0
+    # The ceiling on that, in seconds. When the link stalls the last report goes
+    # stale, and the crosshair is advanced by `lead` PLUS however stale it is —
+    # which is the right thing to do while the barrel keeps moving and the wrong
+    # thing to do forever, so it stops here. The crosshair then holds a bounded
+    # distance ahead of the last thing the gun said instead of sailing off.
+    lead_max: float = 0.06
     frame: str = "display"     # "picture" (LEDs on the picture) or "display" (on the screen)
     beacon_w: float = 1.0      # rectangle width, in widths of that frame
     beacon_h: float = 1.0      # rectangle height, in heights of that frame
@@ -157,6 +191,7 @@ class Settings:
     dog: DogSettings = DogSettings()
     scene: SceneSettings = SceneSettings()
     gun: GunSettings = GunSettings()
+    sound: SoundSettings = SoundSettings()
 
     def summary(self) -> str:
         """One-line summary of the values in effect — printed at startup."""
@@ -284,10 +319,14 @@ def _validated(s: Settings) -> Settings:
         _warn(f'[gun] frame must be "display" or "picture", not {gun.frame!r} — '
               "using the default")
         fixes["frame"] = gbase.frame
-    for name in ("spread", "lead"):
+    for name in ("spread", "lead", "lead_max"):
         if getattr(gun, name) < 0:
             _warn(f"[gun] {name} cannot be negative — using 0")
             fixes[name] = 0.0
+    if fixes.get("lead_max", gun.lead_max) < fixes.get("lead", gun.lead):
+        _warn("[gun] lead_max is below lead — raising it to lead, which is the "
+              "least it can usefully be")
+        fixes["lead_max"] = fixes.get("lead", gun.lead)
     if gun.spread > 0.5:
         _warn("[gun] spread is half the screen wide — capping it at 0.5")
         fixes["spread"] = 0.5
@@ -305,8 +344,23 @@ def _validated(s: Settings) -> Settings:
         _warn("[gun] beacons inside the picture — the crosshair will not reach "
               "its edge; shrink the picture with [scene] scale instead")
 
+    snd, sbase = s.sound, SoundSettings()
+    fixes = {}
+    for name in ("volume", "shot", "quack", "laugh"):
+        value = getattr(snd, name)
+        if value < 0:
+            _warn(f"[sound] {name} cannot be negative — using 0 (silent)")
+            fixes[name] = 0.0
+        elif value > 1:
+            # louder than the file is not a thing the mixer can do, and asking
+            # for it would only clip; the files are normalised, so 1 is the top
+            _warn(f"[sound] {name} is a volume from 0 to 1 — capping it at 1")
+            fixes[name] = 1.0
+    if fixes:
+        snd = SoundSettings(**{**snd.__dict__, **fixes})
+
     # whether such a background exists is the frontend's business, not this module's
-    return Settings(duck=duck, round=rnd, dog=dog, scene=scene, gun=gun)
+    return Settings(duck=duck, round=rnd, dog=dog, scene=scene, gun=gun, sound=snd)
 
 
 def default_path() -> str:
@@ -328,7 +382,7 @@ def load(path: str | None = None) -> Settings:
         return Settings()
 
     for key in data:
-        if key not in ("duck", "round", "dog", "scene", "gun", "spawn"):
+        if key not in ("duck", "round", "dog", "scene", "gun", "sound", "spawn"):
             _warn(f"unknown section [{key}] — skipped")
 
     # the spawn rate used to live in [spawn]; old files still work, but ask to move
@@ -345,4 +399,5 @@ def load(path: str | None = None) -> Settings:
         dog=_section(DogSettings, data.get("dog", {}), "dog"),
         scene=_section(SceneSettings, data.get("scene", {}), "scene"),
         gun=_section(GunSettings, data.get("gun", {}), "gun"),
+        sound=_section(SoundSettings, data.get("sound", {}), "sound"),
     ))

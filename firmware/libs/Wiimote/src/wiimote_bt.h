@@ -25,6 +25,32 @@
 /* --- Duck Hunt patch: how good is the radio link, in numbers --------------- */
 #define HCI_READ_LINK_QUALITY              (0x0003 | HCI_GRP_STATUS_PARAMS_CMDS)
 #define HCI_READ_RSSI                      (0x0005 | HCI_GRP_STATUS_PARAMS_CMDS)
+/* --- Duck Hunt patch: telling the radio which channels not to bother with ---
+ * HCI_Set_AFH_Host_Channel_Classification. Adaptive frequency hopping already
+ * drops channels the controller measures as bad; this is the HOST saying so up
+ * front, which is worth having where the bad channels are known in advance and
+ * always the same - a hall with Wi-Fi access points nailed to channels 1, 6 and
+ * 11. The controller combines this with its own assessment and cannot put back
+ * a channel the host called bad.
+ *
+ * The parameter is 10 bytes, one bit per channel, bit 0 = channel 0 (2402 MHz)
+ * up to bit 78 = channel 78 (2480 MHz); bit 79 is reserved and must be zero.
+ * A set bit means "unknown" (keep using it), a clear bit means "bad". At least
+ * 20 channels must be left unknown or the controller refuses the whole command
+ * with 0x12, Invalid HCI Command Parameters.
+ *
+ * Two things this does NOT do. It only reaches the hop sequence when the local
+ * device is the MASTER of the piconet (the bridge paged the remote); as a slave
+ * the classification only travels if the master asked for reports, which a Wii
+ * Remote does not. And it is not a power setting - a blocked channel is simply
+ * never hopped to, so the traffic moves into the channels that are left.
+ *
+ * If the controller's own channel assessment ever needs to be taken out of the
+ * argument, that is HCI_Write_AFH_Channel_Assessment_Mode, (0x0049 | this OGF),
+ * one byte, 0 = off. Not used here: the two are meant to be combined.
+ */
+#define HCI_SET_AFH_HOST_CHANNEL_CLASSIFICATION \
+                                           (0x003F | HCI_GRP_HOST_CONT_BASEBAND_CMDS)
 
 #define BD_ADDR_LEN     (6)
 struct bd_addr_t {
@@ -207,6 +233,17 @@ static uint16_t make_cmd_read_rssi(uint8_t *buf, uint16_t connection_handle)
   UINT8_TO_STREAM(buf, 2);
   UINT16_TO_STREAM(buf, connection_handle);
   return HCI_H4_CMD_PREAMBLE_SIZE + 2;
+}
+
+// The 79-bit channel map, as described where the opcode is defined above.
+static uint16_t make_cmd_set_afh_host_channel_classification(uint8_t *buf,
+                                                             const uint8_t map[10])
+{
+  UINT8_TO_STREAM(buf, H4_TYPE_COMMAND);
+  UINT16_TO_STREAM(buf, HCI_SET_AFH_HOST_CHANNEL_CLASSIFICATION);
+  UINT8_TO_STREAM(buf, 10);
+  ARRAY_TO_STREAM(buf, map, 10);
+  return HCI_H4_CMD_PREAMBLE_SIZE + 10;
 }
 
 static uint16_t make_cmd_disconnect(uint8_t *buf, uint16_t connection_handle)

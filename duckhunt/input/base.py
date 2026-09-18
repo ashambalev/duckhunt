@@ -61,6 +61,18 @@ class GunStats:
         if not blind:
             self._t_aim = now
 
+    def last_aim(self) -> float:
+        """When the last report WITH beacons arrived (monotonic), 0 if none has.
+
+        This is the timestamp the crosshair's extrapolation is hung on: it must
+        advance when the gun says something new and stand still when it does
+        not, which is exactly what tells a stalled link apart from a barrel that
+        is being held still. Taken when the game drains the port, so it is a
+        frame coarse — which is fine, since everything it is used to measure is
+        several frames long.
+        """
+        return self._t_aim
+
     HOLE = 0.05         # a gap this long is a stall, not clumping
     SPAN = 3.0          # seconds the numbers are averaged over
 

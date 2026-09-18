@@ -63,6 +63,26 @@ Which background to start with is set in `settings.toml`, section `[scene]`; in
 game they cycle with the **B** key. The scene is scaled up by a whole number of
 times, so the pixels stay square (see the root [`README.md`](../README.md)).
 
+## Sounds
+
+`sounds/` — the three WAVs the pygame frontend plays: `shot.wav` (the gun),
+`quack.wav` (a duck taking the shot) and `dog_laugh.wav` (the dog at a miss).
+22 kHz mono 16-bit, all normalised to the same peak so one `[sound] volume` in
+`settings.toml` governs the three. Two scripts can write them:
+
+```bash
+python3 tools/import_nes_sounds.py     # the cartridge's own, from source/nes_sounds/
+python3 tools/make_sounds.py           # or synthesized from nothing, no rip needed
+```
+
+`source/nes_sounds/` holds the originals the first one reads — `zapper_gun`,
+`duck_quack`, `dog_miss`, plus `dog_bark` and `duck_drop` which nothing plays yet.
+They come from the Duck Hunt rip on [The Sounds
+Resource](https://www.sounds-resource.com/nes/duckhunt/) and are Nintendo's, like
+the sprite sheet next to them.
+
+Deleting `sounds/` does not break the game: it prints one line and plays in silence.
+
 ## Fallback path
 
 If `sprites/` is missing, the frontend picks up the individual PNGs in this folder

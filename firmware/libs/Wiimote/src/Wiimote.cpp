@@ -341,6 +341,14 @@ static void process_command_complete_event(uint8_t len, uint8_t* data){
                             (uint16_t)(data[4] | (data[5] << 8)), &q, 1);
     }
   }else
+  if(data[1]==0x3F && data[2]==0x0C){ // set_afh_host_channel_classification
+    // Answered whether it worked or not, unlike the two above: a refused
+    // channel map is a thing the sketch wants to say out loud, not a silence.
+    if(len >= 4){
+      uint8_t st = data[3];
+      _singleton->_callback(WIIMOTE_EVENT_AFH_STATUS, 0, &st, 1);
+    }
+  }else
   if(data[1]==0x09 && data[2]==0x10){ // read_bd_addr
     // data[0] Num_HCI_Command_Packets
     if(data[3]==0x00){ // OK
@@ -1368,6 +1376,11 @@ void Wiimote::read_rssi(uint16_t handle){
 
 void Wiimote::read_link_quality(uint16_t handle){
   uint16_t len = make_cmd_read_link_quality(tmp_data, handle);
+  _queue_data(_tx_queue, tmp_data, len);
+}
+
+void Wiimote::set_afh_channel_map(const uint8_t map[10]){
+  uint16_t len = make_cmd_set_afh_host_channel_classification(tmp_data, map);
   _queue_data(_tx_queue, tmp_data, len);
 }
 

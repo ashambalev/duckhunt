@@ -21,10 +21,12 @@ import random
 import sys
 import time
 import tomllib
+from collections import deque
 
 from ..core import scores
 from ..core.models import DuckState, Facing
 from ..core.world import World
+from ..sound import Sounds
 
 # ---- pixel-art palette -----------------------------------------------------
 PALETTE = {
@@ -182,6 +184,7 @@ KEYMAP = [
     ("B", "next background"),
     ("TAB", "corner targets for the IR beacons"),
     ("G", "the gun's report rate and dropouts"),
+    ("L", "how far ahead the crosshair is drawn"),
     ("HOME (remote) · K", "the bridge's link keep-alive"),
 ]
 
@@ -190,6 +193,13 @@ SCALE = 5          # one sprite pixel = SCALE screen pixels
 MARK_LIFE = 1.4    # seconds a shot's hole stays on screen before it fades out
 RING_LIFE = 0.22   # ... and how long the ring that snaps out to the hit zone lives
 MARKS_MAX = 24     # keep the last few; a fast round can put out a lot of lead
+# The values L steps through, in seconds. [gun] lead from settings.toml is added
+# to this ladder at startup if it is not already on it, so the file's own value
+# is always one of the stops and the game starts on it. Cycling live is the only
+# way to compare these honestly: the difference is a feel, feels do not survive
+# the minute it takes to restart the game and get the remote back, and the one
+# thing worse than an un-tuned knob is a knob tuned from memory.
+LEAD_STEPS = [0.0, 0.02, 0.035, 0.05]
 
 
 def aim_to_picture(gun, gx, gy, geom):
@@ -215,6 +225,115 @@ def aim_to_picture(gun, gx, gy, geom):
         u = (u * sw - ox) / W
         v = (v * sh - oy) / H
     return min(1.0, max(0.0, u)), min(1.0, max(0.0, v))
+
+
+class AimLead:
+    """Where the barrel is pointing NOW, from what the gun last said it was.
+
+    Every link in the chain costs time, and they add up to more than a frame:
+    the remote reports every ~10 ms, the radio adds its own (and much more when
+    it is being interfered with), the game drains the port once a frame, and the
+    frame it draws is shown at the next vsync — measured on this Mac,
+    `display.flip()` paces the loop at 59.8 fps with 16.67 ms between frames,
+    of which the drawing itself is under 1 ms. The rest is the wait. Call it
+    40-55 ms end to end in good health, and a barrel sweeping at 1.5 playfields
+    a second has moved 6-8 % of the screen in that time. That gap IS what "the
+    crosshair lags" means — nothing in the game is slow.
+
+    So the crosshair is not drawn where the gun said. It is drawn where the aim
+    is *going*: advanced along its own velocity by `[gun] lead`, plus however
+    stale the last report already is, and never by more than `[gun] lead_max`.
+
+    Three things this does differently from the frame-to-frame smoothing it
+    replaces, each of which was costing some of the compensation it was meant to
+    apply:
+
+    * **The velocity is fitted over a window** (least squares over the last
+      `WINDOW` seconds) instead of being smoothed one frame at a time. An
+      exponential average at a = 0.35 lags the truth by ~1.9 frames — 31 ms of
+      the 40 it was supposed to be cancelling.
+    * **A sample is a REPORT, not a frame.** It goes in with the time the report
+      arrived, and a report that never came is not a sample at all. Feeding the
+      last known position again every frame is feeding in zero velocity: the old
+      code coasted to a stop during exactly the stalls it should have been
+      coasting THROUGH, which is when the compensation is worth most.
+    * **Both the step and the velocity are capped**, so a beacon dropping out —
+      which can move the reported aim a quarter of the screen in one report —
+      cannot fling the crosshair into a corner. Past the cap the crosshair
+      simply holds, a bounded distance ahead of the last thing the gun said.
+    """
+
+    WINDOW = 0.10       # seconds of reports the velocity is fitted over
+    MIN_FIT = 3         # ... and the fewest samples worth fitting (~10 arrive)
+    MAX_STEP = 0.08     # never advance the crosshair further than this, playfields
+    MAX_VEL = 4.0       # playfields a second; a fast human sweep is 1.5-2
+    FADE = 0.20         # seconds to give the guess back over, once it is stale
+
+    def __init__(self, lead: float, lead_max: float) -> None:
+        self.lead = max(0.0, lead)
+        self.lead_max = max(self.lead, lead_max)
+        self._s = deque()          # (t, x, y) of each report, newest last
+
+    def feed(self, t: float, x: float, y: float) -> None:
+        """Take one sample: where the gun said it was pointing, and WHEN.
+
+        A `t` that has not moved since the last call is the same report over
+        again — the link is stalled, or the beacons are out of view — and is
+        dropped, which is what leaves the velocity standing rather than
+        averaging it away.
+        """
+        if self._s and t <= self._s[-1][0]:
+            return
+        self._s.append((t, x, y))
+        while len(self._s) > 2 and t - self._s[0][0] > self.WINDOW:
+            self._s.popleft()
+
+    def at(self, now: float) -> tuple[float, float] | None:
+        """Where to draw the crosshair, or None before the first sample."""
+        if not self._s:
+            return None
+        t_last, x, y = self._s[-1]
+        if self.lead <= 0:
+            return x, y
+        stale = max(0.0, now - t_last)
+        ahead = min(self.lead_max, self.lead + stale)
+        # Past the cap the guess is no longer a guess about anything: the link
+        # has dropped, or the beacons are out of view, and nothing says the
+        # barrel is still going the way it was. Hand the crosshair back to the
+        # last thing the gun actually said, over FADE seconds rather than in one
+        # frame — a crosshair parked 8 % of the screen off the barrel is a lie,
+        # and a crosshair that jumps there is a worse one.
+        fade = 1.0
+        if stale > self.lead_max:
+            fade = max(0.0, 1.0 - (stale - self.lead_max) / self.FADE)
+        if fade <= 0.0:
+            return x, y
+        vx, vy = self._velocity()
+        dx = min(self.MAX_STEP, max(-self.MAX_STEP, ahead * vx)) * fade
+        dy = min(self.MAX_STEP, max(-self.MAX_STEP, ahead * vy)) * fade
+        return (min(1.0, max(0.0, x + dx)), min(1.0, max(0.0, y + dy)))
+
+    def _velocity(self) -> tuple[float, float]:
+        """Playfields a second, as the slope of a straight line through the
+        window — the estimate with the least delay of its own that still ignores
+        a single noisy report."""
+        s = self._s
+        n = len(s)
+        if n < self.MIN_FIT:
+            return 0.0, 0.0
+        t0 = s[0][0]
+        ts = [p[0] - t0 for p in s]
+        mt = sum(ts) / n
+        den = sum((t - mt) ** 2 for t in ts)
+        if den <= 0:
+            return 0.0, 0.0
+        out = []
+        for i in (1, 2):
+            vals = [p[i] for p in s]
+            mv = sum(vals) / n
+            v = sum((t - mt) * (val - mv) for t, val in zip(ts, vals)) / den
+            out.append(min(self.MAX_VEL, max(-self.MAX_VEL, v)))
+        return out[0], out[1]
 
 
 def _open_fullscreen(pygame, want_display, desktops):
@@ -463,10 +582,17 @@ class PygameFrontend:
         # override from the shell.
         os.environ.setdefault("SDL_VIDEO_MAC_FULLSCREEN_SPACES", "0")
 
+        # The mixer's buffer size is taken when the subsystem comes up, so the
+        # ask has to happen before init() — after it, the sounds play at SDL's
+        # default latency, which is enough to hear your own trigger late.
+        Sounds.pre_init(pygame)
         pygame.init()
         assets_dir = os.path.join(os.path.dirname(__file__), "..", "..", "assets")
         settings = self.world.settings
         table = scores.load()
+        # the shot, the quack and the dog's laugh ([sound] in settings.toml).
+        # Silent if the files or the audio device are missing — it says so once.
+        sfx = Sounds(pygame, settings.sound, assets_dir)
 
         # background from settings.toml ([scene] background); "none" -> draw our own
         wanted_bg = self.world.settings.scene.background
@@ -680,7 +806,14 @@ class PygameFrontend:
             if snap is not None:
                 snap["t"] = round(now, 2)
                 snap["fps"] = round(clock.get_fps(), 1)
+                snap["lead"] = aim_lead.lead      # which setting this second was
+                                                  # played on — L changes it live
                 snap["ducks"] = len(self.world.ducks)
+                # hits as well as shots, because the one question the lead
+                # setting actually has to answer is whether ducks fall — and
+                # with both here, a stretch played at one lead can be scored
+                # against a stretch played at another instead of remembered.
+                snap["hits"] = self.world.hits
                 # shots in this second: the firmware kicks the remote's rumble
                 # motor for 90 ms on every trigger pull, and that motor comes out
                 # of the same AA cells as the radio — so if the stream sags
@@ -911,8 +1044,13 @@ class PygameFrontend:
         last_escaped = 0
         crosshair = [0.5, 0.5]
         marks = []                 # where the shots went: {x, y, t, hit}
-        aim_prev = [0.5, 0.5]      # last frame's raw aim, for the lead below
-        aim_vel = [0.0, 0.0]       # its smoothed velocity, playfields per second
+        # The crosshair is drawn ahead of the reported aim, by [gun] lead plus
+        # whatever the last report is already stale by — see AimLead.
+        aim_lead = AimLead(gun.lead, gun.lead_max)
+        # ... and L steps through the ladder live, starting from whatever
+        # settings.toml asked for.
+        lead_steps = sorted(set(LEAD_STEPS + [round(gun.lead, 4)]))
+        lead_at = [lead_steps.index(round(gun.lead, 4))]
         prev_mouse_down = False
 
         running = True
@@ -962,6 +1100,24 @@ class PygameFrontend:
                     hide_cross[0] = not hide_cross[0]
                 elif e.key == pygame.K_g:
                     show_gun[0] = not show_gun[0]
+                elif e.key == pygame.K_l:
+                    # Step the lead, and put the gun's numbers up while doing it:
+                    # the value being tried has to be on screen, or a round of
+                    # A/B comes back as "the third one, I think".
+                    lead_at[0] = (lead_at[0] + 1) % len(lead_steps)
+                    aim_lead.lead = lead_steps[lead_at[0]]
+                    # lead_max moves WITH it rather than staying at whatever the
+                    # file said. Leaving it high was what made the first A/B
+                    # lie: at a ladder step of 20 ms the ceiling was still 60,
+                    # so every stall in the link — 1.5 a second, measured —
+                    # briefly tripled the lead, and the only step that felt
+                    # clean was 0, which turns extrapolation off altogether.
+                    # Stepping the pair together tests settings that could
+                    # actually be shipped.
+                    aim_lead.lead_max = aim_lead.lead
+                    show_gun[0] = True
+                    print(f"[gun] lead = {aim_lead.lead:g} s "
+                          f"({1000 * aim_lead.lead:.0f} ms ahead)")
                 elif e.key == pygame.K_TAB:
                     show_marks[0] = not show_marks[0]
                 elif e.key == pygame.K_b and backgrounds:
@@ -980,20 +1136,20 @@ class PygameFrontend:
                 if st.quit:
                     running = False
                 ax, ay = aim_to_picture(gun, st.x, st.y, geom)
-                # [gun] lead: hide some of the link's delay by advancing the
-                # crosshair along the direction it is already travelling. The
-                # velocity is smoothed hard, because a raw frame-to-frame
-                # difference at this sample rate is mostly noise, and noise
-                # multiplied by the lead is jitter. lead = 0 leaves it alone.
-                if gun.lead > 0 and dt > 0:
-                    a = 0.35
-                    aim_vel[0] += a * ((ax - aim_prev[0]) / dt - aim_vel[0])
-                    aim_vel[1] += a * ((ay - aim_prev[1]) / dt - aim_vel[1])
-                    crosshair[0] = min(1.0, max(0.0, ax + gun.lead * aim_vel[0]))
-                    crosshair[1] = min(1.0, max(0.0, ay + gun.lead * aim_vel[1]))
-                else:
-                    crosshair[0], crosshair[1] = ax, ay
-                aim_prev[0], aim_prev[1] = ax, ay
+                # [gun] lead: hide the link's delay by drawing the crosshair
+                # where the aim is going rather than where it was last heard
+                # from. The sample is stamped with the time the REPORT arrived,
+                # which is the whole trick — see AimLead. Sources that keep no
+                # such stamp (the keyboard) fall back to now, and a source that
+                # is not moving then feeds the same point every frame, out of
+                # which the fit gives a velocity of zero and nothing is
+                # extrapolated. The mouse does not come through here at all.
+                stats = getattr(source, "stats", None)
+                sample_t = stats.last_aim() if stats is not None else 0.0
+                aim_lead.feed(sample_t or time.monotonic(), ax, ay)
+                ahead = aim_lead.at(time.monotonic())
+                if ahead is not None:
+                    crosshair[0], crosshair[1] = ahead
                 fire = st.fire
                 if st.pressed & 0x02:              # A on the remote
                     hide_cross[0] = not hide_cross[0]
@@ -1093,9 +1249,16 @@ class PygameFrontend:
             hits_before = self.world.hits
             self.world.update(dt, crosshair[0], crosshair[1], fire)
             if fire:
+                hit = self.world.hits > hits_before
                 marks.append({"x": crosshair[0], "y": crosshair[1], "t": 0.0,
-                              "hit": self.world.hits > hits_before})
+                              "hit": hit})
                 del marks[:-MARKS_MAX]
+                # ... and the same thing in sound: the bang on every pull, the
+                # quack on top of it when a duck takes it. The bang is the
+                # feedback that the trigger was read at all — with a light gun
+                # three metres from the screen that is worth hearing even on a
+                # hit ([sound] shot_on_hit turns it off there).
+                sfx.fired(hit)
             if self.world.finished:
                 mode = ("name" if scores.qualifies(table, self.world.hits,
                                                    self.world.shots) else "over")
@@ -1106,6 +1269,10 @@ class PygameFrontend:
                     pop_kind, pop_t = "catch", 0.0
                 elif self.world.escaped > last_escaped:
                     pop_kind, pop_t = "laugh", 0.0
+                    # the laugh goes with the dog coming up out of the grass, not
+                    # with the shot that missed: a duck is only really missed once
+                    # it leaves the picture, and that is the moment the dog reacts
+                    sfx.laugh()
             last_landed = self.world.landed
             last_escaped = self.world.escaped
             if pop_kind is not None:
@@ -1172,6 +1339,7 @@ class PygameFrontend:
                     if snap["age"] is not None:
                         parts.append(f"age {1000*snap['age']:.0f}ms")
                     parts.append(f"fps {clock.get_fps():.0f}")
+                    parts.append(f"lead {1000 * aim_lead.lead:.0f}ms")
                     parts.append(f"keepalive {'ON' if keepalive[0] else 'off'}")
                     text = " · ".join(parts)
                 img = font.render(text, True, (255, 240, 140))

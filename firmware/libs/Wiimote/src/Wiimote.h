@@ -18,7 +18,11 @@ enum wiimote_event_type_t {
   // --- Duck Hunt patch: how the pairing attempt ended. data[0] is the HCI
   // status, 0x00 = paired. Anything else means the PIN was not the one this
   // remote was waiting for (see wiimote_pin_t), and the remote drops the link.
-  WIIMOTE_EVENT_AUTH_COMPLETE
+  WIIMOTE_EVENT_AUTH_COMPLETE,
+  // --- Duck Hunt patch: the controller's answer to set_afh_channel_map().
+  // data[0] is the HCI status, 0x00 = the map was taken. 0x12 (invalid
+  // parameters) is what fewer than 20 usable channels comes back as.
+  WIIMOTE_EVENT_AFH_STATUS
 };
 
 // --- Duck Hunt patch: which PIN answers the controller's PIN request ---------
@@ -70,6 +74,14 @@ class Wiimote {
     void request_status(uint16_t handle);            // -> report 0x20, has the battery
     void read_rssi(uint16_t handle);                 // -> WIIMOTE_EVENT_RSSI
     void read_link_quality(uint16_t handle);         // -> WIIMOTE_EVENT_LINK_QUALITY
+    // --- Duck Hunt patch: stop hopping onto channels known to be busy --------
+    // 10 bytes, one bit per channel, bit 0 = 2402 MHz: set = keep using it,
+    // clear = do not. At least 20 must be left set. Controller-wide and not
+    // per-link, so it can be sent whether or not a remote is connected, and it
+    // only reaches the hop sequence while this side is the piconet's master.
+    // -> WIIMOTE_EVENT_AFH_STATUS. Sending nothing leaves the radio exactly as
+    // it was: the controller's own adaptive hopping is untouched by this.
+    void set_afh_channel_map(const uint8_t map[10]);
   private:
     wiimote_callback_t _wiimote_callback;
 };
