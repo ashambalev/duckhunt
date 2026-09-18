@@ -276,7 +276,10 @@ the gun and the bridge cost several dB each on top. What to do about it, in the
 order it is worth doing:
 
 - **Shorten the link.** The bridge on a USB extension at the player's position,
-  a metre or two from the gun, not three metres away behind the screen.
+  a metre or two from the gun, not three metres away behind the screen. This is
+  the one that was actually measured: halving that distance took the stalls from
+  1.5 a second to 0.17 and the report rate from 83/s to 96 (see [the run
+  notes](#to-check-on-the-next-run)). Nothing in software came close.
 - **Use the antenna.** The WROOM-**32U** has a U.FL connector precisely so the
   antenna does not have to be where the board is; keep it vertical (the remote's
   own antenna is too) and clear of metal and of the laptop's lid.
@@ -410,16 +413,23 @@ the gun comes out:
       port forces the SYNC-style pairing (the only one the *remote* stores, after
       which any button on it reconnects); `f` makes the bridge forget what it
       knows, which is the way to replay the first connection from scratch.
-- [ ] **What was it that took 6 dB off the link, and can it be repeated?**
-      Two runs half an hour apart, same room, same remote, same firmware: RSSI
-      went from -44…-49 dBm to -36…-46, the report rate from 83/s to 96, stalls
-      longer than 50 ms from **1.5 a second to 0.17**, and the worst pause in a
-      run from 1376 ms to 136. That is the single biggest improvement any change
-      has made to this gun, and what physically changed between the two runs was
-      not written down — where the bridge was standing, how the antenna lay, how
-      far back the player was. Find out and record it here: it is the recipe for
-      playing anywhere noisy, and it is worth more than every software knob in
-      this file put together.
+- [x] **What took 6 dB off the link? The laptop was moved closer to the
+      player — and that is the whole recipe.** Two runs half an hour apart, same
+      room, same remote, same firmware: RSSI from -44…-49 dBm to -36…-46, the
+      report rate from 83/s to 96, stalls longer than 50 ms from **1.5 a second
+      to 0.17**, and the worst pause in a run from 1376 ms to 136. Nothing in
+      software has ever moved these numbers that far. Six dB in free space is
+      about half the distance, so the bridge went from roughly three metres from
+      the gun to roughly one and a half.
+
+      The lesson is not "play closer to the screen", though, and that matters at
+      a venue where the screen's position is not yours to choose: the bridge was
+      only closer because it is plugged into the laptop that carries the screen.
+      **Put it on a USB extension instead** and the radio gets its 6 dB while the
+      picture stays exactly where it was — which is the point, because the
+      playing distance is set by the IR camera's field of view (all four beacons
+      have to fit in ~33°), not by the radio. The two constraints pull in
+      opposite directions, and a three-metre cable is what stops them fighting.
 
 - [ ] **Does the AFH channel map help in a crowded hall? The controller takes
       it — measured.** `a` on the serial port answered `# afh: the radio took
