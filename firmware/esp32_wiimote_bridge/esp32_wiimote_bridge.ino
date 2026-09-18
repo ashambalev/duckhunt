@@ -490,7 +490,7 @@ static uint8_t afh_build(const afh_plan_t &p, uint8_t map[10]) {
 }
 
 static void afh_print() {
-  Serial.printf("# afh: plan %u/%u — %s%s\n", g_afh_plan, AFH_PLAN_COUNT - 1,
+  Serial.printf("# afh: plan %u/%u - %s%s\n", g_afh_plan, AFH_PLAN_COUNT - 1,
                 AFH_PLANS[g_afh_plan].name,
                 g_afh_sent ? "" : " (nothing has been sent to the radio)");
 }
@@ -504,13 +504,13 @@ static void afh_apply(uint8_t idx) {
   uint8_t left = afh_build(AFH_PLANS[idx], map);
   if (left < AFH_MIN_CHANNELS) {
     Serial.printf("# afh: %s would leave %u of 79 channels and the radio needs "
-                  "at least %u — nothing sent\n",
+                  "at least %u - nothing sent\n",
                   AFH_PLANS[idx].name, left, AFH_MIN_CHANNELS);
     return;
   }
   wii.set_afh_channel_map(map);
   g_afh_sent = true;
-  Serial.printf("# afh: %s — %u of 79 channels left in play\n",
+  Serial.printf("# afh: %s - %u of 79 channels left in play\n",
                 AFH_PLANS[idx].name, left);
   if (g_handle && !g_we_called)
     status("afh: the REMOTE placed this call, so IT owns the hop sequence and "

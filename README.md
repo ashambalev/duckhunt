@@ -335,10 +335,15 @@ Three things to know before using it:
   0x12) — and by the sketch before it gets that far, which is why blocking all of
   1, 6 and 11 is offered only in its narrow form. A refused map changes nothing.
 
-None of this has been run against the hardware yet — it compiles, the channel
-maps have been checked bit by bit against the Wi-Fi channel plan, and that is
-all. `# afh: the radio took the channel map (status 0x00)` is what the bridge
-prints when the controller accepts one.
+**The ESP32's controller does implement it** — measured, with the firmware
+flashed and the port watched: `a` produced `# afh: Wi-Fi 1 - 57 of 79 channels
+left in play` followed by `# afh: the radio took the channel map (status 0x00)`,
+and again for the next plan. Boot printed nothing about AFH at all, and a
+reboot — which is what opening the serial port does — puts it back to plan 0
+with nothing sent, so a plan cannot be left switched on by accident. What is
+still unmeasured is whether it *helps*: that needs a crowded band and an A/B
+against the report rate, which is a thing to do next to a busy access point
+rather than at a desk.
 
 ### To check on the next run
 
@@ -416,16 +421,15 @@ the gun comes out:
       playing anywhere noisy, and it is worth more than every software knob in
       this file put together.
 
-- [ ] **Does the AFH channel map help in a crowded hall — and does the
-      controller even take it?** The command is in (`a` on the serial port,
-      inert until typed), but it has never been sent to a real radio. Two things
-      to watch: the answer line (`# afh: the radio took the channel map (status
-      0x00)`, against `REFUSED` — the ESP32's controller need not implement a
-      command it is allowed to leave out), and then the report rate, A/B against
-      the same spot with the plan off. Worth doing at a desk with a 2.4 GHz
-      access point nearby before trusting it anywhere that matters, and worth
-      remembering that it only reaches the hop sequence while the bridge is the
-      one that placed the call.
+- [ ] **Does the AFH channel map help in a crowded hall? The controller takes
+      it — measured.** `a` on the serial port answered `# afh: the radio took
+      the channel map (status 0x00)` for two plans in a row, boot said nothing
+      about AFH, and a reboot returns it to plan 0 with nothing sent. So the
+      command works and cannot be left on by accident. Whether it *helps* is the
+      part still open, and it cannot be answered at a quiet desk: it wants a
+      busy access point, an A/B on the report rate with the plan on and off, and
+      a remote the bridge itself called (`the bridge called it`) — as a slave it
+      owns no hop sequence and the map goes nowhere.
 
 - [ ] **Do the beacons and the picture line up?** The picture is smaller than the
       display, because the pixel art is scaled by a whole number and centred
