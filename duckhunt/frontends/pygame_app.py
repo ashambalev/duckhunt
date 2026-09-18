@@ -23,10 +23,12 @@ import time
 import tomllib
 from collections import deque
 
+from ..core import calibration as calib_core
 from ..core import scores
 from ..core.models import DuckState, Facing
 from ..core.world import World
 from ..sound import Sounds
+from .calibrate import Calibrator
 
 # ---- pixel-art palette -----------------------------------------------------
 PALETTE = {
@@ -186,6 +188,8 @@ KEYMAP = [
     ("G", "the gun's report rate and dropouts"),
     ("L", "how far ahead the crosshair is drawn"),
     ("HOME (remote) · K", "the bridge's link keep-alive"),
+    ("F1", "sight the gun in on five targets"),
+    ("F2", "use that calibration on / off"),
 ]
 
 FPS = 60
@@ -202,7 +206,7 @@ MARKS_MAX = 24     # keep the last few; a fast round can put out a lot of lead
 LEAD_STEPS = [0.0, 0.02, 0.035, 0.05]
 
 
-def aim_to_picture(gun, gx, gy, geom):
+def aim_to_picture(gun, gx, gy, geom, clamp=True):
     """Gun coordinates -> a fraction of the picture the ducks fly in.
 
     The gun reports where the barrel points inside the BEACON RECTANGLE, 0..1
@@ -217,6 +221,11 @@ def aim_to_picture(gun, gx, gy, geom):
     "display" beacons play fullscreen.)
 
     `geom` is (display w, display h, picture w, picture h, picture x, picture y).
+
+    `clamp=False` hands back the number as it came out, outside the picture and
+    all. The game wants it clamped — a crosshair does not leave the screen — but
+    the calibrator is measuring exactly how far outside the gun lands, and a
+    clamped reading there is a measurement of the clamp.
     """
     sw, sh, W, H, ox, oy = geom
     u = gun.beacon_cx + (gx - 0.5) * gun.beacon_w
@@ -224,6 +233,8 @@ def aim_to_picture(gun, gx, gy, geom):
     if gun.frame == "display":
         u = (u * sw - ox) / W
         v = (v * sh - oy) / H
+    if not clamp:
+        return u, v
     return min(1.0, max(0.0, u)), min(1.0, max(0.0, v))
 
 
@@ -559,8 +570,15 @@ def _pick_background(backgrounds, wanted):
 
 
 class PygameFrontend:
-    def __init__(self, settings=None, align=False, log_gun=False):
+    def __init__(self, settings=None, align=False, log_gun=False,
+                 calibrate=False, use_calibration=True):
         self.world = World(settings=settings)
+        # --calibrate: straight into the sighting-in screen, before the title
+        self.calibrate = calibrate
+        # --no-calibration: play on the gun's own numbers, calibration.json or
+        # not. The knob exists so the correction can be judged by turning it off
+        # in the middle of a round (F2) rather than from memory.
+        self.use_calibration = use_calibration
         # --align: start with the beacon corner targets showing (TAB toggles)
         self.align = align
         # --log-gun: one line a second about the gun's stream, for reading the
@@ -1033,6 +1051,57 @@ class PygameFrontend:
         name_buf = ""
         gun = settings.gun
         gun_is_picture = gun.frame == "picture"
+        # The sights are not the camera: they sit above and behind it, the
+        # barrel is not exactly parallel to the lens, and the beacon rectangle
+        # in settings.toml is a tape measure's opinion. What that adds up to is
+        # measured by the calibrator (F1) and kept in calibration.json — see
+        # core/calibration.py. Applied after the beacon rectangle is taken out
+        # and before the crosshair is thrown ahead, so the lead works on
+        # corrected numbers and a duck falls where the front sight was.
+        calib = [calib_core.load() if self.use_calibration else calib_core.Calibration()]
+        use_calib = [calib[0].active]
+        if calib[0].active:
+            print(f"calibration.json — {calib[0].describe()}")
+            warn = calib[0].mismatch((W, H), (sw, sh), gun)
+            if warn:
+                print(f"calibration.json: {warn}")
+        elif self.use_calibration:
+            print("no sight calibration yet — F1 on the title screen sights the "
+                  "gun in on five targets")
+
+        def run_calibrator():
+            """F1: five targets, shot down the sights, in place of the game."""
+            mouse_down = [False]
+
+            def poll_raw():
+                """One frame of RAW aim for the calibrator: no correction, no
+                lead, unclamped — the numbers it is there to measure."""
+                if source is None:
+                    mx, my = pygame.mouse.get_pos()
+                    md = pygame.mouse.get_pressed()[0]
+                    fired = md and not mouse_down[0]
+                    mouse_down[0] = md
+                    return ((mx - offset[0]) / W, (my - offset[1]) / H,
+                            time.monotonic(), fired, 0, False)
+                st = source.poll()
+                ux, uy = aim_to_picture(gun, st.x, st.y, geom, clamp=False)
+                stats = getattr(source, "stats", None)
+                # the time the REPORT arrived, not now: a stale one is the last
+                # thing the gun said, not where it is pointing, and the
+                # calibrator refuses to record it
+                t = stats.last_aim() if stats is not None else time.monotonic()
+                return ux, uy, t, st.fire, st.pressed, st.quit
+
+            fresh_calib = Calibrator(pygame, screen, present, poll_raw, W, H,
+                                     settings.gun.spread, calib[0],
+                                     display=(sw, sh), gun=gun).run()
+            if fresh_calib is not None:
+                calib[0] = fresh_calib
+                use_calib[0] = fresh_calib.active
+                print(f"calibration — {fresh_calib.describe()}")
+            pygame.mouse.set_visible(False)
+            clock.tick(FPS)       # swallow the time spent in there, or the first
+                                  # frame back would advance the world by minutes
         show_marks = [self.align]          # --align starts the corner targets up
         show_gun = [False]                 # G: the gun's report rate and dropouts
         hide_cross = [False]               # A on the remote (or C): no crosshair
@@ -1052,6 +1121,9 @@ class PygameFrontend:
         lead_steps = sorted(set(LEAD_STEPS + [round(gun.lead, 4)]))
         lead_at = [lead_steps.index(round(gun.lead, 4))]
         prev_mouse_down = False
+
+        if self.calibrate:
+            run_calibrator()
 
         running = True
         while running:
@@ -1118,6 +1190,20 @@ class PygameFrontend:
                     show_gun[0] = True
                     print(f"[gun] lead = {aim_lead.lead:g} s "
                           f"({1000 * aim_lead.lead:.0f} ms ahead)")
+                elif e.key == pygame.K_F1 and mode in ("intro", "over"):
+                    # From the title screen or the score table only: sighting in
+                    # is a thing you do between rounds, and stepping out of a
+                    # live round would leave ducks hanging in the air.
+                    run_calibrator()
+                elif e.key == pygame.K_F2:
+                    if not calib[0].active:
+                        print("no sight calibration to turn on — F1 shoots one")
+                    else:
+                        use_calib[0] = not use_calib[0]
+                        show_gun[0] = True
+                        print(f"sight calibration "
+                              f"{'ON' if use_calib[0] else 'off'} "
+                              f"({calib[0].describe()})")
                 elif e.key == pygame.K_TAB:
                     show_marks[0] = not show_marks[0]
                 elif e.key == pygame.K_b and backgrounds:
@@ -1135,7 +1221,10 @@ class PygameFrontend:
                 st = source.poll()
                 if st.quit:
                     running = False
-                ax, ay = aim_to_picture(gun, st.x, st.y, geom)
+                ax, ay = aim_to_picture(gun, st.x, st.y, geom, clamp=False)
+                if use_calib[0]:
+                    ax, ay = calib[0].apply(ax, ay)
+                ax, ay = min(1.0, max(0.0, ax)), min(1.0, max(0.0, ay))
                 # [gun] lead: hide the link's delay by drawing the crosshair
                 # where the aim is going rather than where it was last heard
                 # from. The sample is stamped with the time the REPORT arrived,
@@ -1341,6 +1430,7 @@ class PygameFrontend:
                     parts.append(f"fps {clock.get_fps():.0f}")
                     parts.append(f"lead {1000 * aim_lead.lead:.0f}ms")
                     parts.append(f"keepalive {'ON' if keepalive[0] else 'off'}")
+                    parts.append(f"calib {'ON' if use_calib[0] else 'off'}")
                     text = " · ".join(parts)
                 img = font.render(text, True, (255, 240, 140))
                 screen.blit(img, (16, 12 + hud.get_height() + 6))

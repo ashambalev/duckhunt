@@ -146,7 +146,9 @@ the aim is — "it feels laggy" has three different causes and these tell them
 apart), **L** steps the crosshair's lead through 0 / 20 / 35 / 50 ms live and
 puts that HUD up while it does (the difference is a feel, and a feel does not
 survive the minute it takes to restart the game and get the remote back),
-**Space** or the trigger leaves the results screen, **Q** quits.
+**F1** sights the gun in on five targets (from the title screen or the score
+table) and **F2** turns that correction on and off so it can be judged rather
+than assumed, **Space** or the trigger leaves the results screen, **Q** quits.
 `--align` starts with those
 targets up, and what it draws follows `[gun] frame`: with `"picture"`, brackets in
 the picture's four corners to tape a bundle into; with `"display"`, the letterbox
@@ -182,6 +184,68 @@ frame ([`docs/BUILD.md`](docs/BUILD.md) has the table). The distance follows the
 width of the beacon rectangle, so `[scene] scale` shrinks the picture (and the
 rectangle with it) to bring a TV within reach of a sofa. On fewer than four dots it drops back to the old centroid guess: the
 crosshair keeps moving, but it is no longer screen-referenced.
+
+### Sighting the gun in
+
+The homography puts the crosshair where the **camera** is looking. You aim down
+the **sights**, and those are not the camera: they sit a couple of centimetres
+above and behind it, the barrel is not exactly parallel to the lens, and the
+beacon rectangle in `[gun]` is a tape measure's opinion rather than a law. What
+comes out is a crosshair a steady distance from what the front sight is covering
+— invisible while the crosshair is on screen, because you just aim with it, and
+murder the moment you turn it off (**A** on the remote) and shoot down the barrel
+the way the Zapper was meant to be shot.
+
+So it gets measured. **F1**, or `--calibrate`:
+
+```bash
+cd /Users/evgenychernyak/projects/duckhunt
+.venv/bin/python main.py --pygame --serial /dev/tty.usbserial-0001 --calibrate
+```
+
+Five round targets — the centre, then the four corners — shot one at a time
+**with the crosshair off**. Put the front sight on the bull, pull, and the screen
+records the gap between where the gun said it was pointing and where you actually
+pointed it. One round is five shots; **the reading is not the position at the
+moment the trigger was read** but the median of the aim over the quarter second
+before it, stopping 40 ms short of the pull, which is the part where the gun was
+being held still rather than jerked.
+
+After every round it says how bad it was and what it can do about it:
+
+| line | what it means |
+|---|---|
+| `BEFORE` | how far the gun was from where you pointed it — the error you came to fix |
+| `AFTER` | what is left once the correction is applied. **This is the only honest answer to "is it good now"** |
+| `YOUR HAND` | your own scatter while holding aim — the floor. A residual already below it cannot be improved by shooting more |
+| `MODEL` | what the fit found: the sights' shift, a scale per axis, and the roll you hold the gun at |
+| `ROUND TO ROUND` | from the second round on: how far the same target moved between rounds. Bigger than `AFTER` means the residual was luck |
+
+The verdict is read against **the shot's own radius** (`[gun] spread`), not
+against a round number — the same residual is excellent on a forgiving hit zone
+and poor on a pinpoint one. From there: **trigger** or **Space** shoots another
+round (five more shots into the same fit, and it gets better), **R** throws away
+the round you just shot if you fumbled one, **S** (or **A** on the remote) saves
+it to `calibration.json` and plays with it from then on, **Esc** leaves it alone.
+**U** during a round takes back the last shot.
+
+The correction is an **affine** map — shift, scale per axis, rotation and shear,
+six numbers out of ten equations. A pure shift would fix the parallax and nothing
+else, and the other two errors are not shifts: a beacon rectangle measured 3 %
+too wide is a scale error that is zero in the middle and worst at the edges, and
+a gun held with a little roll is a rotation. A full homography would be eight
+numbers, but the two extra ones model the camera looking at the screen off-axis
+— and the firmware has already dealt with that one. The fit is checked before it
+is believed: a map that mirrors the picture, tilts it 25° or halves it is a
+misaimed round rather than a sight error, and it falls back to scale+shift and
+then to shift alone instead of shipping nonsense.
+
+Shots that land with no beacons in view are **not** recorded — the last position
+is a memory, not an aim, and baking one into the fit is how a calibration ends up
+worse than none. `calibration.json` keeps the geometry it was measured on, and
+the game says so at startup if the picture or the `[gun]` numbers have changed
+since. Sighting in belongs to `--pygame`: the ASCII frontend has no letterboxed
+picture to measure against.
 
 ### The lag, and where it actually is
 
@@ -742,6 +806,8 @@ and plays on in silence, the mixer handed back.
 | `duckhunt/core/world.py` | **the pure logic core**: `World.update()`, spawning, physics, score |
 | `duckhunt/core/config.py` | reading `settings.toml`: duck size and speed, spawn rate |
 | `duckhunt/core/scores.py` | the high-score table (`scores.json`) |
+| `duckhunt/core/calibration.py` | the sight correction: fitting it, `calibration.json`, and applying it |
+| `duckhunt/frontends/calibrate.py` | the five-target sighting-in screen (**F1**, `--calibrate`) |
 | `settings.toml` | the settings themselves — edit these, no need to touch the code |
 | `duckhunt/frontends/pygame_app.py` | **the pixel frontend**: sprites, backgrounds, dog, crosshair |
 | `duckhunt/frontends/terminal.py` | the ASCII frontend (the original prototype) |

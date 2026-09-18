@@ -37,6 +37,16 @@ the beacon rectangle does not match what `[gun]` says it is — fix it there)
 and the spread (that is the real precision, and the sensor's own contribution is
 only 0.1-0.2% of the screen, so anything larger is the hardware or the hand).
 
+**The game now measures the same thing from the inside, and corrects it** —
+`main.py --pygame --calibrate`, or **F1** from the title screen. Five round
+targets shot down the sights with the crosshair off; it prints the offset and
+the spread this section is after (`BEFORE`, `AFTER` and `YOUR HAND` on its
+results screen) and fits the correction rather than only reporting it. It does
+not replace this run: `ir_view` sees the dots, the quad and the frames with
+fewer than four beacons, which is where a *hardware* answer lives. It answers
+the other half — how far the gun is from where the SIGHTS are pointed, which no
+amount of homography can know.
+
 ## 2. A hit zone, not a pinpoint crosshair — done
 
 A shot used to be a single point, which was harsher than the NES ever was and

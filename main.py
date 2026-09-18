@@ -17,6 +17,7 @@ To list the ESP32 ports on a Mac:  ls /dev/tty.usbserial*  or  ls /dev/tty.usbmo
 from __future__ import annotations
 
 import argparse
+import sys
 
 from blessed import Terminal
 
@@ -61,6 +62,14 @@ def main() -> None:
                     help="write the gun stream's own numbers to logs/gun_<time>."
                          "jsonl once a second (rate, clumping, dropouts, fps) — "
                          "read it back with tools/ir_view.py --trend")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="sight the gun in first: five round targets, aimed "
+                         "down the sights with the crosshair off, and the miss "
+                         "is corrected from then on (F1 in game does the same). "
+                         "Saved in calibration.json")
+    ap.add_argument("--no-calibration", dest="calibration", action="store_false",
+                    help="play on the gun's raw numbers, ignoring "
+                         "calibration.json (F2 toggles it in game)")
     ap.add_argument("--align", action="store_true",
                     help="start with targets in the picture's corners, to tape the "
                          "four IR beacons to (TAB toggles them in game)")
@@ -86,7 +95,9 @@ def main() -> None:
     # ---- pixel frontend (pygame) ----
     if args.pygame:
         from duckhunt.frontends.pygame_app import PygameFrontend
-        game = PygameFrontend(settings, align=args.align, log_gun=args.log_gun)
+        game = PygameFrontend(settings, align=args.align, log_gun=args.log_gun,
+                              calibrate=args.calibrate,
+                              use_calibration=args.calibration)
         try:
             game.run(gun)          # gun=None -> aim with the mouse
         finally:
@@ -97,6 +108,13 @@ def main() -> None:
 
     # ---- terminal (ASCII) frontend ----
     term = Terminal()
+    if args.calibrate:
+        # The correction is measured in fractions of the PIXEL frontend's
+        # letterboxed picture, and the ASCII one has no such picture to measure
+        # against — so sighting in belongs to --pygame. Said out loud rather
+        # than silently ignored.
+        print("--calibrate needs --pygame: the sighting-in screen draws its "
+              "targets in the pixel picture", file=sys.stderr)
     if gun is not None:
         source: InputSource = GunWithKeyboardQuit(gun, term)
     else:
