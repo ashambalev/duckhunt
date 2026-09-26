@@ -226,7 +226,15 @@ def stats(conn: sqlite3.Connection, ducks: int = 100) -> dict:
         # "is_record" as the ticker means it: this run IS the standing record
         latest["is_record"] = (latest["hits"] == record["hits"]
                                and latest["name"] == record["name"])
+    # Which round sizes exist at all. A 40-duck round and a 100-duck round do
+    # not compete, so they are separate boards — and a board that is empty
+    # because every round was a different size has to be able to say so, or it
+    # reads as "the game is not saving anything".
+    sizes = conn.execute(
+        "SELECT ducks, COUNT(*) AS runs FROM runs GROUP BY ducks "
+        "ORDER BY runs DESC").fetchall()
     return {"ducks": ducks,
+            "sizes": [dict(r) for r in sizes],
             "rounds": row["rounds"], "players": row["players"],
             "ducks_down": row["ducks_down"], "shots": row["shots"],
             "today_best": dict(today) if today else None,

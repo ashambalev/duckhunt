@@ -14,9 +14,8 @@
 
   Query parameters: color=green|amber|white, cabinet=beige|graphite|wood,
   ducks, top, refresh (seconds), speed (ticker characters per second),
-  attract=0 (hold the top board), plain=1 (no cabinet, no CRT effects),
-  key= (when the server was started with --token).
-  Keys: F fullscreen · C colour · B cabinet · SPACE panel · E effects on/off.
+  plain=1 (no cabinet, no CRT effects), key= (with the server's --token).
+  Keys: F fullscreen · C colour · B cabinet · E effects on/off.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -176,6 +175,10 @@
   .row.flash { animation: flash 0.45s steps(1) 8; }
   @keyframes flash { 50% { background: var(--fg); color: var(--ink); } }
   #empty { text-align: center; color: var(--fg-dim); font-size: inherit; }
+  #elsewhere {
+    text-align: center; color: var(--fg); font-size: 0.62em;
+    margin-top: 1.2em; cursor: pointer;
+  }
 
   #ticker {
     flex: none; display: flex; align-items: center;
@@ -189,6 +192,8 @@
     position: absolute; visibility: hidden; white-space: pre;
     font-size: calc(var(--H) * 0.045);
   }
+  /* the widest row, drawn nowhere, measured at a known size — see fitRows() */
+  #rowprobe { position: absolute; visibility: hidden; width: auto; left: -9999px; }
   body.down #picture { opacity: 0.5; text-shadow: none; animation: none; }
 
   /* ---- the control strip: grille, knobs, badge, lamp ------------------ */
@@ -318,6 +323,7 @@
         <div id="rows"></div>
         <div id="ticker"><span id="ticker-text"></span><span id="cursor">█</span></div>
         <span id="probe">0000000000000000000000000000000000000000</span>
+        <div id="rowprobe" class="row"></div>
       </div>
       <div class="fx" id="scanlines"></div>
       <div class="fx" id="aperture"></div>
@@ -336,7 +342,7 @@
     </div>
   </div>
 </div>
-<div id="help">F fullscreen · C colour · B cabinet · SPACE panel · E effects</div>
+<div id="help">F fullscreen · C colour · B cabinet · E effects</div>
 
 <script>
 (() => {
@@ -353,22 +359,16 @@
     color: COLORS.includes(q.get("color")) ? q.get("color") : "green",
     cabinet: CABINETS.includes(q.get("cabinet")) ? q.get("cabinet") : "beige",
     key: q.get("key") || "",
-    attract: q.get("attract") !== "0",
   };
   document.documentElement.dataset.color = cfg.color;
   document.documentElement.dataset.cabinet = cfg.cabinet;
   if (q.get("plain") === "1") document.body.classList.add("plain");
 
-  // Two panels: the board, and who has played it most. (There was a TODAY panel
-  // here; a scoreboard that resets at midnight is a scoreboard people stop
-  // looking at, and the ticker still carries the day's best if it matters.)
-  const PANELS = [
-    { name: () => `TOP ${cfg.top}`, window: "all", order: "best" },
-    { name: () => "MOST ROUNDS",    window: "all", order: "attempts" },
-  ];
-  const PANEL_MS = 20000, FLASH_MS = 5000, SHOUT_MS = 30000;
+  // One board, and only one: the best round per player, best first. A rotating
+  // panel of TODAY and MOST ROUNDS was here and came back out — a screen people
+  // glance at from across the room should show the same thing every glance.
+  const FLASH_MS = 5000, SHOUT_MS = 30000;
 
-  let panel = 0, shown = 0, panelAt = Date.now();
   let rows = [], stats = {}, up = false, error = "";
   let lastId = null, flashName = null, flashAt = 0, shout = "", shoutAt = 0;
 
@@ -379,6 +379,7 @@
     ticker: document.getElementById("ticker-text"),
     tickerBox: document.getElementById("ticker"),
     probe: document.getElementById("probe"),
+    rowProbe: document.getElementById("rowprobe"),
   };
 
   const api = p => p + (cfg.key ? `&key=${encodeURIComponent(cfg.key)}` : "");
@@ -390,15 +391,12 @@
   }
 
   async function poll() {
-    const p = PANELS[panel];
     try {
       const [board, s] = await Promise.all([
-        fetchJSON(api(`/api/board?ducks=${cfg.ducks}&limit=${cfg.top}` +
-                      `&window=${p.window}&order=${p.order}`)),
+        fetchJSON(api(`/api/board?ducks=${cfg.ducks}&limit=${cfg.top}`)),
         fetchJSON(api(`/api/stats?ducks=${cfg.ducks}`)),
       ]);
       rows = board.rows || [];
-      shown = panel;
       stats = s;
       up = true; error = "";
       noticeNewRun(s.latest);
@@ -445,13 +443,29 @@
 
   function draw() {
     document.body.classList.toggle("down", !up);
-    el.panel.textContent = PANELS[shown].name();
+    el.panel.textContent = `TOP ${cfg.top}`;
     el.rows.innerHTML = "";
     if (!rows.length) {
       const d = document.createElement("div");
       d.id = "empty";
       d.textContent = up ? "NO ROUNDS YET" : "WAITING FOR THE SERVER";
       el.rows.appendChild(d);
+      // An empty board is nearly always the wrong round size, not a game that
+      // is failing to save: 40-duck and 100-duck rounds are separate boards.
+      // Say where the rounds actually are instead of leaving it a mystery.
+      for (const other of (stats.sizes || [])) {
+        if (other.ducks === cfg.ducks) continue;
+        const a = document.createElement("div");
+        a.id = "elsewhere";
+        a.innerHTML = `${other.runs} ROUND${other.runs === 1 ? "" : "S"} OF ` +
+          `${other.ducks} DUCKS — <u>OPEN ?ducks=${other.ducks}</u>`;
+        a.onclick = () => {
+          const u = new URL(location.href);
+          u.searchParams.set("ducks", other.ducks);
+          location.href = u;
+        };
+        el.rows.appendChild(a);
+      }
       return;
     }
     const lit = flashName && Date.now() - flashAt < FLASH_MS;
@@ -459,18 +473,21 @@
       const div = document.createElement("div");
       div.className = "row" + (i < 3 ? " top" : "") +
         (lit && r.name.toLowerCase() === flashName ? " flash" : "");
-      const tries = r.attempts === 1 ? "1 TRY" : `${r.attempts} TRIES`;
-      div.innerHTML =
-        `<span class="rank">${i + 1}</span>` +
-        `<span class="name">${escape(r.name.toUpperCase())}</span>` +
-        `<span class="dots"></span>` +
-        `<span class="hits">${r.hits}</span><span class="unit"> DUCKS</span>` +
-        `<span class="acc">${Math.round(r.accuracy)}%</span>` +
-        `<span class="tries">${tries}</span>` +
-        `<span class="when">${r.finished_at.slice(5, 10)}</span>`;
+      div.innerHTML = rowHTML(r, i + 1);
       el.rows.appendChild(div);
     });
     fitRows();
+  }
+
+  function rowHTML(r, rank) {
+    const tries = r.attempts === 1 ? "1 TRY" : `${r.attempts} TRIES`;
+    return `<span class="rank">${rank}</span>` +
+      `<span class="name">${escape(r.name.toUpperCase())}</span>` +
+      `<span class="dots"></span>` +
+      `<span class="hits">${r.hits}</span><span class="unit"> DUCKS</span>` +
+      `<span class="acc">${Math.round(r.accuracy)}%</span>` +
+      `<span class="tries">${tries}</span>` +
+      `<span class="when">${r.finished_at.slice(5, 10)}</span>`;
   }
 
   // The list is set in whatever type size makes all of it fit between the
@@ -479,9 +496,23 @@
   // one thing a scoreboard must never do.
   function fitRows() {
     const n = Math.max(1, rows.length);
-    const max = el.tube.clientHeight * 0.062;
-    const size = Math.min(max, el.rows.clientHeight / n / 1.34);
-    el.rows.style.fontSize = `${Math.max(8, size)}px`;
+    const max = el.tube.clientHeight * 0.062;      // never larger than this
+    const byHeight = el.rows.clientHeight / n / 1.34;
+    // ...and never wider than the picture either: two rows have room to grow
+    // vertically, and growing until the name has to be squeezed into an
+    // ellipsis is not the same thing as fitting. The widest row is drawn
+    // nowhere at a known size and measured, which needs no arithmetic about
+    // how wide a character of this font happens to be.
+    let byWidth = max;
+    const widest = rows.reduce((a, b) =>
+      (b.name.length > a.name.length ? b : a), rows[0]);
+    if (widest) {
+      el.rowProbe.innerHTML = rowHTML(widest, rows.length);
+      el.rowProbe.style.fontSize = "100px";
+      const w = el.rowProbe.getBoundingClientRect().width;
+      if (w > 0) byWidth = 100 * el.rows.clientWidth / w;
+    }
+    el.rows.style.fontSize = `${Math.max(8, Math.min(max, byHeight, byWidth))}px`;
   }
 
   // How many characters fit on the running line: measured off a hidden probe in
@@ -503,11 +534,6 @@
     offset = (offset + cfg.speed * dt) % Math.max(1, text.length);
     el.ticker.textContent =
       "◀ " + (text + text + text).slice(Math.floor(offset), Math.floor(offset) + room);
-    if (cfg.attract && Date.now() - panelAt > PANEL_MS) {
-      panel = (panel + 1) % PANELS.length;
-      panelAt = Date.now();
-      poll();
-    }
     requestAnimationFrame(frame);
   }
 
@@ -522,8 +548,6 @@
     } else if (k === "b") {
       cfg.cabinet = CABINETS[(CABINETS.indexOf(cfg.cabinet) + 1) % CABINETS.length];
       document.documentElement.dataset.cabinet = cfg.cabinet;
-    } else if (k === " ") {
-      panel = (panel + 1) % PANELS.length; panelAt = Date.now(); poll();
     } else if (k === "e") {
       document.body.classList.toggle("plain");
       measure(); fitRows();

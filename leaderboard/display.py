@@ -39,20 +39,32 @@ NAME_W = 18
 FPS = 20
 FLASH_SECONDS = 5.0        # how long a freshly arrived row stays lit
 SHOUT_SECONDS = 30.0       # how long the ticker leads with a new record
-PANEL_SECONDS = 20.0       # attract mode: how long each panel holds the screen
 
 # Phosphor palettes: the bright colour for the top of the board, the dim one for
 # the rows below it, so the list fades down the way a real tube does.
+def default_ducks() -> int:
+    """The round size to show: whatever the game on this machine is set to.
+
+    The board and the game usually share a Mac, and `[round] ducks` is the one
+    setting they must agree on — a board showing 100-duck rounds while the game
+    plays 40 is empty for a reason nobody can see. On a box with no game (a Pi
+    running only the board) there is no settings.toml and 100 is the default.
+    """
+    try:
+        from duckhunt.core.config import load
+        return load().round.ducks
+    except Exception:                                   # noqa: BLE001
+        return 100
+
+
 PALETTES = {"green": ("bright_green", "green"),
             "amber": ("bright_yellow", "yellow"),
             "white": ("bright_white", "white")}
 
-# The panels the board rotates between when nothing new has arrived for a while.
-# Each is one query against the same table. (There was a TODAY panel here; a
-# scoreboard that empties itself at midnight is one people stop looking at. The
-# server still answers `window=today` — putting it back is one line.)
-PANELS = [("TOP {top}", "all", "best"),
-          ("MOST ROUNDS PLAYED", "all", "attempts")]
+# One board, and only one: the best round per player, best first. The server
+# still answers `window=today|week` and `order=attempts`, and a panel rotating
+# through those was here and came back out — a screen people glance at from
+# across the room should be showing the same thing every time they glance.
 
 BOX = {"tl": "╔", "tr": "╗", "bl": "╚", "br": "╝", "h": "═", "v": "║",
        "ml": "╠", "mr": "╣"}
@@ -85,12 +97,11 @@ class Board:
         self.url = url.rstrip("/")
         self.ducks, self.top, self.refresh, self.token = ducks, top, refresh, token
         self._lock = threading.Lock()
-        self.panels: dict[str, list[dict]] = {}
+        self.rows: list[dict] = []
         self.stats: dict = {}
         self.up = False
         self.last_ok = 0.0
         self.error = "connecting"
-        self.want = 0                    # which panel the drawing loop is showing
         self._wake = threading.Event()
 
     # ---- the network side ----
@@ -104,19 +115,15 @@ class Board:
 
     def poll_once(self) -> None:
         try:
-            fetched = {}
-            for _, window, order in PANELS:
-                key = f"{window}/{order}"
-                fetched[key] = self._get(
-                    f"/api/board?ducks={self.ducks}&limit={self.top}"
-                    f"&window={window}&order={order}").get("rows", [])
+            rows = self._get(f"/api/board?ducks={self.ducks}&limit={self.top}"
+                             ).get("rows", [])
             stats = self._get(f"/api/stats?ducks={self.ducks}")
         except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
             with self._lock:
                 self.up, self.error = False, str(getattr(exc, "reason", exc))[:40]
             return
         with self._lock:
-            self.panels, self.stats = fetched, stats
+            self.rows, self.stats = rows, stats
             self.up, self.last_ok, self.error = True, time.monotonic(), ""
 
     def run_forever(self) -> None:
@@ -132,11 +139,9 @@ class Board:
 
     # ---- the drawing side reads through here ----
 
-    def snapshot(self, panel: int) -> tuple[list[dict], dict, bool, str]:
-        title, window, order = PANELS[panel]
+    def snapshot(self) -> tuple[list[dict], dict, bool, str]:
         with self._lock:
-            rows = list(self.panels.get(f"{window}/{order}", []))
-            return rows, dict(self.stats), self.up, self.error
+            return list(self.rows), dict(self.stats), self.up, self.error
 
 
 def ticker_text(stats: dict, up: bool, error: str, shout: str) -> str:
@@ -210,9 +215,10 @@ def build_parser() -> argparse.ArgumentParser:
                                  description="Duck Hunt console scoreboard")
     ap.add_argument("--url", default="http://localhost:8420")
     ap.add_argument("--token", default="", help="if the server wants one")
-    ap.add_argument("--ducks", type=int, default=100,
-                    help="round size this board is for: 100-duck and 50-duck "
-                         "rounds do not compete")
+    ap.add_argument("--ducks", type=int, default=default_ducks(),
+                    help="round size this board is for: 100-duck and 40-duck "
+                         "rounds do not compete (default: [round] ducks from "
+                         "the game's settings.toml)")
     ap.add_argument("--top", type=int, default=10)
     ap.add_argument("--refresh", type=float, default=2.0, help="seconds between polls")
     ap.add_argument("--speed", type=float, default=12.0,
@@ -224,8 +230,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="no banner, no boot sequence, no blinking cursor — for a "
                          "corner of a tiling window manager rather than a screen")
     ap.add_argument("--bell", action="store_true", help="beep on a new record")
-    ap.add_argument("--no-attract", dest="attract", action="store_false",
-                    help="hold the top board instead of rotating the panels")
     return ap
 
 
@@ -241,8 +245,6 @@ def main(argv: list[str] | None = None) -> None:
     board = Board(args.url, args.ducks, args.top, args.refresh, args.token)
     board.start()
 
-    panel = 0
-    panel_t = 0.0
     offset = 0.0
     shout, shout_t = "", 0.0
     flash_key, flash_t = None, 0.0
@@ -261,10 +263,7 @@ def main(argv: list[str] | None = None) -> None:
             key = term.inkey(timeout=0)
             if key and (str(key).lower() == "q" or key.name == "KEY_ESCAPE"):
                 break
-            if key and str(key) == " ":                  # step the panel by hand
-                panel, panel_t = (panel + 1) % len(PANELS), 0.0
-
-            rows, stats, up, error = board.snapshot(panel)
+            rows, stats, up, error = board.snapshot()
 
             # a run we have not seen before: light its row, and let the ticker
             # shout about it if it is the new record
@@ -291,10 +290,6 @@ def main(argv: list[str] | None = None) -> None:
                 if shout_t > SHOUT_SECONDS:
                     shout = ""
 
-            panel_t += dt
-            if args.attract and panel_t > PANEL_SECONDS:
-                panel, panel_t = (panel + 1) % len(PANELS), 0.0
-
             h, w = term.height, term.width
             if (h, w) != last_size:
                 print(term.home + term.clear, end="")
@@ -310,8 +305,7 @@ def main(argv: list[str] | None = None) -> None:
                 lines.append(("", bright))
 
             # ---- the panel ----
-            title, _, _ = PANELS[panel]
-            title = title.format(top=args.top)
+            title = f"TOP {args.top}"
             inner = min(w - 2, 58 if not compact else w - 2)
             pad = max(0, (w - inner - 2) // 2)
             head = " " * pad + box["tl"] + box["h"] * inner + box["tr"]
@@ -325,6 +319,13 @@ def main(argv: list[str] | None = None) -> None:
                 empty = ("NO ROUNDS YET" if up else "WAITING FOR THE SERVER")
                 lines.append((" " * pad + box["v"] + empty.center(inner)[:inner]
                               + box["v"], dim))
+                for other in stats.get("sizes", []):
+                    if other["ducks"] == args.ducks:
+                        continue
+                    note = (f"{other['runs']} ROUND(S) OF {other['ducks']} DUCKS "
+                            f"— RESTART WITH --ducks {other['ducks']}")
+                    lines.append((" " * pad + box["v"] + note.center(inner)[:inner]
+                                  + box["v"], bright))
             for i, row in enumerate(rows[:args.top], 1):
                 text = row_text(i, row, inner - 2, compact, args.ascii)
                 body = " " * pad + box["v"] + " " + text.ljust(inner - 2) + " " + box["v"]

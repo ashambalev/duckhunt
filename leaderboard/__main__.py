@@ -68,6 +68,9 @@ def main(argv: list[str] | None = None) -> None:
                          "on another machine on the LAN)")
     ap.add_argument("--port", type=int, default=8420)
     ap.add_argument("--db", default=store.default_path())
+    ap.add_argument("--ducks", type=int, default=None,
+                    help="round size the board shows (default: [round] ducks "
+                         "from the game's settings.toml)")
     ap.add_argument("--token", default="",
                     help="shared secret; the game sends it in X-Duckhunt-Key")
     ap.add_argument("--browser", action="store_true",
@@ -107,12 +110,12 @@ def main(argv: list[str] | None = None) -> None:
             # query string — checked by the board's own parser, so a typo is
             # caught here rather than silently ignored by a URL
             d = display.build_parser().parse_args(rest)
+            if args.ducks is not None:
+                d.ducks = args.ducks
             params = {"ducks": d.ducks, "top": d.top, "color": d.color,
                       "refresh": d.refresh, "speed": d.speed}
             if d.plain:
                 params["plain"] = 1
-            if not d.attract:
-                params["attract"] = 0
             if args.token:
                 params["key"] = args.token
             url = f"http://localhost:{args.port}/?{urlencode(params)}"
@@ -128,6 +131,8 @@ def main(argv: list[str] | None = None) -> None:
                       "done", file=sys.stderr)
         else:
             forward = list(rest) + ["--url", f"http://127.0.0.1:{args.port}"]
+            if args.ducks is not None:
+                forward += ["--ducks", str(args.ducks)]
             if args.token:
                 forward += ["--token", args.token]
             display.main(forward)

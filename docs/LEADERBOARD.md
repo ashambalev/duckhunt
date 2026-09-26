@@ -247,6 +247,7 @@ The same data, drawn two ways, because they are good at different things.
 | | `board.html` (browser) | `display.py` (terminal) |
 |---|---|---|
 | Looks | a 4:3 television in a plastic cabinet: glow, scanlines, aperture grille, vignette, the roll band | text: box drawing, dot leaders, dim rows |
+| Shows | the same one board: best round per player, best first | the same |
 | Needs | a browser and a desktop | a terminal, any terminal |
 | Where it wins | the screen people stand around | a Pi on a tty, SSH, no desktop at all |
 
@@ -268,27 +269,33 @@ is a reload rather than a restart.
   DUCKTRON DH-84 badge and two feet. The whole thing is sized off one custom
   property, `--H` (the tube's height), so cabinet, knobs and type scale together
   and the picture keeps its proportion at any window size.
-- **The picture**: the title, a rotating panel heading, up to `top` rows with dot
+- **The picture**: the title, `TOP 10` under it, up to `top` rows with dot
   leaders, and the running line pinned to the bottom. The top three rows burn
   brighter than the rest, and the row type is set from JS to whatever makes all
-  `top` rows fit between the heading and the ticker — ten names get smaller
-  letters than three do, and no row is ever clipped by the bottom of the picture.
+  `top` rows fit — both between the heading and the ticker, and across the
+  picture: ten names get smaller letters than two do, no row is clipped by the
+  bottom, and no name is squeezed into an ellipsis by a type size that was only
+  ever checked against the height.
 - **The tube**: `#scanlines` (a dark line every other row), `#grille` (a very faint
   RGB stripe — the aperture grille, and what stops it looking like a text editor),
   `#roll` (**the band**, one `translateY` keyframe over 7.5 s), `#vignette` (the
   glass's dark corners and one diagonal reflection), plus a slow `flicker` on the
   whole picture and a `warmup` line that opens out into a picture on load.
+- **The round size** is the one setting the board and the game must agree on:
+  40-duck and 100-duck rounds are separate boards, so `--ducks` (and `?ducks=`)
+  defaults to `[round] ducks` from the game's `settings.toml`. A board with no
+  rows says which sizes *do* have rounds, rather than leaving an empty screen to
+  be read as "the game is not saving anything".
 - **Query parameters**: `color=green|amber|white`,
-  `cabinet=beige|graphite|wood`, `ducks`, `top`, `refresh`, `speed`, `attract=0`,
+  `cabinet=beige|graphite|wood`, `ducks`, `top`, `refresh`, `speed`,
   `plain=1` (no cabinet and no effects — the data alone, for a screenshot or a
   tiling window manager), `key=` (when the server was started with `--token` — a
   page cannot set a header on its own fetches).
-- **Keys**: `F` fullscreen, `C` next colour, `B` next cabinet, `Space` next panel,
-  `E` effects on and off.
+- **Keys**: `F` fullscreen, `C` next colour, `B` next cabinet, `E` effects on and
+  off.
 - Polls `/api/board` and `/api/stats` every `refresh` seconds while the ticker
   scrolls every frame; a fresh run flashes its row and the ticker leads with
-  `*** NEW RECORD ***`; with the link down the last board stays on screen, dimmed,
-  and the heading stays on the panel the rows actually came from.
+  `*** NEW RECORD ***`; with the link down the last board stays on screen, dimmed.
 
 ## The console display
 
@@ -316,16 +323,16 @@ black.
 - **Link down**: the last board stays on screen, dimmed, and the running line says
   `LINK DOWN — RETRYING` with the reason. A scoreboard that goes blank because a
   Wi-Fi packet was lost is worse than a stale one.
-- **Attract mode**: the panel rotates every 20 s — TOP 10 → MOST ROUNDS PLAYED.
-  `Space` steps it by hand, `--no-attract` holds the first. (There was a TODAY
-  panel; a scoreboard that empties itself at midnight is one people stop looking
-  at. `window=today` still exists on `/api/board`, so putting it back is one line
-  in `PANELS` — in either board.)
+- **One board, and only one**: the best round per player, best first. A panel
+  rotating through TODAY and MOST ROUNDS PLAYED was built here and came back out —
+  a screen people glance at from across the room should be showing the same thing
+  every time they glance at it. The server still answers `window=today|week` and
+  `order=attempts`, so another panel is a query away if it ever earns its place.
 - **Resize** is picked up per frame; below 40 columns it drops to a compact
   `1.EUGENE 66` layout.
 - Flags: `--url --token --ducks --top --refresh --speed --color green|amber|white
-  --ascii --plain --bell --no-attract`. `q` or Esc quits. All of them work through
-  `python3 -m leaderboard` as well, which adds `--host --port --db --log`.
+  --ascii --plain --bell`. `q` or Esc quits. All of them work through
+  `python3 -m leaderboard` as well, which adds `--host --port --db --ducks --log`.
 
 ### The retro treatment
 
@@ -384,7 +391,7 @@ thing that works with no server anywhere. It is simply never shown any more.
 
 - [x] **M1 — store + server.** Schema, validation, the five routes.
 - [x] **M2 — the console board.** The table, the running line, the poll thread, the
-      link-down state, attract mode.
+      link-down state.
 - [x] **M3 — the name.** Asked after the round (not before, as this file first
       planned), remembered in `player.json`, `--player` to skip it.
 - [x] **M4 — the game talks to the board.** The client, the `[leaderboard]`
@@ -394,8 +401,7 @@ thing that works with no server anywhere. It is simply never shown any more.
       Mac, so the board comes up with the box.
 - [ ] **M7 — optional.** Shoot-the-letters name entry (the only thing the keyboard
       is still needed for); `/api/events` as SSE so the display reacts instantly
-      instead of polling; per-day and per-week boards already exist as a `window=`
-      parameter — give them their own panels.
+      instead of polling.
 
 ## Files
 

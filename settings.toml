@@ -284,7 +284,7 @@ beacon_cy = 0.507     # its centre down, as a fraction of that frame
 # server down is written to pending_runs.jsonl and reaches the board on the next
 # launch — the run's own id makes a double-send harmless.
 [leaderboard]
-enabled = false                    # true once the server is up
+enabled = true                     # the board is up; false plays without it
 url = "http://localhost:8420"      # the server; a Pi on the LAN is the same line
 client_id = "eugene-mac"           # which cabinet this is, in the server's log
 timeout = 2.0                      # seconds per attempt; three attempts, then the queue
