@@ -8,9 +8,11 @@ ESP32-S3-CAM plan B). Nothing is falling back to anything: the remote plays.
 
 Stage 7, the leaderboard, is built and running — the server, the console board on
 a screen of its own, and the game posting one row per round without drawing any of
-it ([`docs/LEADERBOARD.md`](LEADERBOARD.md)). What is left of it is the tail:
-autostart, and the two ideas below that only matter once people play often enough
-to have names worth finding. The milestone names are its.
+it ([`docs/LEADERBOARD.md`](LEADERBOARD.md)). It is finished through M5: one
+command brings the whole thing up, and the one milestone still open is waiting on
+hardware rather than on anyone writing it. So the real next work is the two ideas
+below, which only matter once people play often enough to have names worth
+finding. The milestone numbers are `LEADERBOARD.md`'s, and they match it.
 
 ## Next up
 
@@ -27,12 +29,21 @@ to have names worth finding. The milestone names are its.
       the board's own screen. Checked both ways: with the server up the row is
       there in under a second, and three rounds played with it down arrive once
       each after it is back.
-- [ ] **M5 — the tail.** Done: `leaderboard/seed.py` (`--from-scores`,
-      `--demo N`), the ticker's record announcements, README and `LEADERBOARD.md`
-      rewritten to what was actually built. Left: **autostart** — `launchd` on the
-      Mac, `systemd` on the Pi, so the server and the board come up with the box
-      instead of with two terminals.
-- [ ] **M6 — if it earns it.** Shoot-the-letters name entry, `/api/events` so the
+- [x] **M5 — seeding.** `leaderboard/seed.py` (`--from-scores`, `--demo N`), the
+      ticker's record announcements, README and `LEADERBOARD.md` rewritten to what
+      was actually built.
+- [ ] **M6 — autostart. Blocked on the Pi existing, and not otherwise wanted.**
+      `systemd` units for the Pi, a `launchd` plist for the Mac. Two things this
+      is *not* for, both of which it used to claim: it is not two terminals down
+      to one — `python3 -m leaderboard` already runs the server in a thread with
+      the board in the foreground, one thing to start and `q` to quit both — and
+      it is not a round saved, because a round posted with the server down goes
+      to `pending_runs.jsonl` and arrives when it is back. What it is for is the
+      box in a room with no keyboard on it, powered up by a wall switch, which is
+      the Pi under the TV and does not exist yet. Written before that box is
+      here, a unit is a guessed user, a guessed path and a guessed tty that
+      nobody can run once to check.
+- [ ] **M7 — if it earns it.** Shoot-the-letters name entry, `/api/events` so the
       board reacts instead of polling, per-day and per-week boards on a rotating
       panel.
 
@@ -42,8 +53,8 @@ two cases landing on one row, and the server killed mid-evening.
 
 ## After the leaderboard
 
-These three wait for M5. All of them touch files another session is writing right
-now (`main.py`, `frontends/pygame_app.py`, `core/world.py`, `core/config.py`,
+These three are the next real work — M6 is parked until there is a Pi to park it
+on. All of them touch files another session is writing right now (`main.py`, `frontends/pygame_app.py`, `core/world.py`, `core/config.py`,
 `leaderboard/store.py`), so starting early means merging for no reason.
 
 ### 1. Two modes: a scored round and a practice round

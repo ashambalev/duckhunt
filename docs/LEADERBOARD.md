@@ -238,7 +238,11 @@ thread beside the board.
 
 **Autostart on the Pi** (once it lives on a box of its own): a `systemd` unit for
 the server and a second one for the display on tty1, both `Restart=always`; on a
-Mac, the same with a `launchd` plist. Sketches go here when it happens.
+Mac, the same with a `launchd` plist. Sketches go here when it happens — and not
+before, because until there is a box the unit is a guessed user, a guessed path
+and a guessed tty that nobody can run once to check. On this Mac there is nothing
+for it to fix: `python3 -m leaderboard` is already one command, and a round posted
+while the server is down is not lost but queued.
 
 ## Two boards
 
@@ -398,8 +402,9 @@ thing that works with no server anywhere. It is simply never shown any more.
       settings, the offline queue, the one delivery line on the results screen.
 - [x] **M5 — seeding.** `leaderboard/seed.py`: import `scores.json`, `--demo N`.
 - [ ] **M6 — autostart.** `systemd` units for the Pi / a `launchd` plist for the
-      Mac, so the board comes up with the box.
-- [ ] **M7 — optional.** Shoot-the-letters name entry (the only thing the keyboard
+      Mac, so the board comes up with the box. Blocked on the Pi existing: see
+      the note under **The server** for why it buys nothing here.
+- [ ] **M7 — if it earns it.** Shoot-the-letters name entry (the only thing the keyboard
       is still needed for); `/api/events` as SSE so the display reacts instantly
       instead of polling.
 

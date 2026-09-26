@@ -592,8 +592,8 @@ the same `InputSource`.
       shooting *after* the round and posts the result to a separate server that
       keeps every attempt in SQLite; a console board shows the best run per player
       with a running line along the bottom, and the game itself draws none of it —
-      [`docs/LEADERBOARD.md`](docs/LEADERBOARD.md). Autostart on the Pi is what is
-      left.
+      [`docs/LEADERBOARD.md`](docs/LEADERBOARD.md). One command brings the whole
+      thing up; autostart waits for the Pi it would run on.
 
 ## How a game goes
 
