@@ -264,3 +264,28 @@ beacon_w = 1.017      # beacon rectangle width, in widths of the frame above
 beacon_h = 1.045      # its height, in heights of that frame
 beacon_cx = 0.5       # its centre across, as a fraction of that frame
 beacon_cy = 0.507     # its centre down, as a fraction of that frame
+
+
+# ---------------------------------------------------------------------------
+# [leaderboard] — the scoreboard, which is not part of the game
+#
+# The board is two processes of its own, meant for a screen of its own:
+#
+#   python3 -m leaderboard.server                              # :8420 + leaderboard.db
+#   python3 -m leaderboard.display --url http://localhost:8420 # the board itself
+#
+# The game asks WHO WAS SHOOTING once the round is over, posts one row, and draws
+# nothing of what comes back — no ranks, no other players, no table. Two
+# scoreboards disagreeing about which one to read is worse than one; see
+# docs/LEADERBOARD.md.
+#
+# Off by default: with enabled = false the game never touches the network and
+# behaves exactly as it did before the board existed. A round played with the
+# server down is written to pending_runs.jsonl and reaches the board on the next
+# launch — the run's own id makes a double-send harmless.
+[leaderboard]
+enabled = false                    # true once the server is up
+url = "http://localhost:8420"      # the server; a Pi on the LAN is the same line
+client_id = "eugene-mac"           # which cabinet this is, in the server's log
+timeout = 2.0                      # seconds per attempt; three attempts, then the queue
+token = ""                         # only if the server was started with --token

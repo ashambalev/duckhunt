@@ -9,6 +9,8 @@ seed, which is handy for tests.
 from __future__ import annotations
 
 import random
+import uuid
+from datetime import datetime, timezone
 
 from .config import Settings, load
 from .models import Duck, DuckState, Facing
@@ -35,6 +37,13 @@ class World:
         # watches them for increments)
         self.landed = 0    # a downed duck hit the ground (the dog retrieves it)
         self.escaped = 0   # a live duck flew off screen (the dog laughs)
+        # Who this round IS, for the leaderboard. The id is made here rather than
+        # when the result is sent, so a retried POST is recognised as the same
+        # round; `started_at` is the wall clock, because `elapsed` cannot say
+        # which evening a row belongs to.
+        self.run_uuid = uuid.uuid4().hex
+        self.started_at = datetime.now(timezone.utc).isoformat(
+            timespec="milliseconds")
 
     @property
     def accuracy(self) -> float:

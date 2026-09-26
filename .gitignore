@@ -16,3 +16,14 @@ calibration.json
 
 # Test-run logs from tools/ir_view.py
 logs/
+
+# The scoreboard's database, its queue of unsent rounds, and who played last
+leaderboard.db
+leaderboard.db-wal
+leaderboard.db-shm
+leaderboard.log
+pending_runs.jsonl
+player.json
+
+# Playwright MCP scratch (screenshots, page snapshots)
+.playwright-mcp/

@@ -588,10 +588,12 @@ the same `InputSource`.
 - [ ] **Stage 5** — enclosure (3D-printed shell around the remote), recoil, going
       wireless (Wi-Fi/UDP or BLE, `x,y,b` unchanged).
 - [ ] **Stage 6** — levels, NES sounds, more of that dog 🐕.
-- [ ] **Stage 7** — a leaderboard on a screen of its own: the name is asked before
-      the round, the result goes to a separate server that keeps every attempt in
-      SQLite and shows the best run per player on an old-computer console board
-      with a running line — planned in [`docs/LEADERBOARD.md`](docs/LEADERBOARD.md).
+- [x] **Stage 7** — a leaderboard on a screen of its own: the game asks who was
+      shooting *after* the round and posts the result to a separate server that
+      keeps every attempt in SQLite; a console board shows the best run per player
+      with a running line along the bottom, and the game itself draws none of it —
+      [`docs/LEADERBOARD.md`](docs/LEADERBOARD.md). Autostart on the Pi is what is
+      left.
 
 ## How a game goes
 
@@ -605,24 +607,62 @@ dog keeps to the bottom `[dog] band` (20 %), so neither gets in the other's way.
 When the flock is gone you get the result: hits, shots, accuracy, time. **Esc**
 during a round ends it there and gets you the same screen — the score so far
 counts, and the result says how far the round actually got, so a short round does
-not read as a bad one. If the result made the top ten, the game asks for a name
-(**Enter** saves, **Esc** skips), and the round goes into `scores.json` in the
-project root. After that **Space** or the trigger goes back to the title screen,
-where another pull starts the next round, and **Q** quits. The table is also
-printed to the terminal on exit. On a tied score, whoever spent fewer shots ranks
-higher.
+not read as a bad one.
 
-That table is local to this Mac and keeps ten rounds. Moving it onto a screen of
-its own — a separate server storing every attempt and showing the best result per
-player, console style with a running line — is planned in
-[`docs/LEADERBOARD.md`](docs/LEADERBOARD.md); nothing of it is built yet.
+Then the game asks **WHO WAS SHOOTING?** — after every round, not only a record
+one. **Enter** sends the round to the leaderboard, **Esc** skips it. A name can be
+up to **50 characters**, so a name and a surname both fit; the field steps down a
+size once it is long, and the boards cut what they show to the width they have. The last name
+typed is offered pre-filled, so an evening of rounds is one keypress a time; the
+first character typed replaces it, so nobody has to backspace someone else's name
+out. After that **Space** or the trigger goes back to the title screen, where
+another pull starts the next round, and **Q** quits.
+
+**The board itself is a screen of its own** and the game draws none of it — no
+ranks, no other players, no table, just a line saying the round got there. It is
+started on its own, one command for the whole scoreboard:
+
+```bash
+cd /Users/evgenychernyak/projects/duckhunt
+.venv/bin/python -m leaderboard --browser                           # server + the tube-TV board
+.venv/bin/python main.py --pygame --serial /dev/tty.usbserial-0001 \
+                         --leaderboard http://localhost:8420
+```
+
+`python3 -m leaderboard --browser` is the whole scoreboard in one command: the
+server in a thread, and the board opened in the browser. Drag that window to the
+second screen and press **F** for fullscreen. It is drawn as a television set: a **4:3** tube in a
+plastic cabinet with a speaker grille, two knobs, a power lamp and feet — phosphor
+glow, scanlines, an aperture grille, and the bright band rolling slowly down the
+picture that a camera sees on a real CRT. Green by default, `--color amber` or
+`--color white`, and `?cabinet=graphite` or `?cabinet=wood` for the case (`C` and
+`B` cycle them in the page).
+
+Drop `--browser` and the same command draws the **console board** in that terminal
+instead: box drawing, dot leaders, the same running line. It is the one for a Pi
+on a tty with no desktop. Both read the same server, so you can run one of each,
+and either can still be started on its own —
+`python3 -m leaderboard.server` plus `python3 -m leaderboard.display --url …` —
+which is what you want when the board lives on a box of its own.
+
+The server keeps **every** attempt in SQLite and the board shows the best run per
+player (`66 DUCKS · 66% · 12 TRIES`), with a running line of records and totals
+scrolling along the bottom. A round played with the server down waits in
+`pending_runs.jsonl` and lands on the board the next time the game starts. The
+permanent switch is `[leaderboard] enabled = true` in `settings.toml`; the whole
+thing is described in [`docs/LEADERBOARD.md`](docs/LEADERBOARD.md).
+
+`scores.json` in the project root is still written as it always was — a
+per-machine mirror of the ten best rounds, and what still works with no server
+anywhere. It is simply not shown any more, in the game or on exit. On a tied
+score, whoever spent fewer shots ranks higher.
 
 Every shot is heard: the bang of the gun, a quack where it connected, and the dog
 laughing at whatever flew off unharmed ([Sound](#sound) below — `[sound] enabled =
 false` if the room needs quiet).
 
 The interface is English (as on the NES): `HIT 37  DUCK 64/100  41s  ACC 58%`,
-`NEW HIGH SCORE`, `HIGH SCORES` — as are the comments in `settings.toml`, the
+`WHO WAS SHOOTING?`, `ON THE BOARD` — as are the comments in `settings.toml`, the
 `--help` output and this documentation.
 
 ## Settings
@@ -818,8 +858,6 @@ and plays on in silence, the mixer handed back.
 | `duckhunt/input/wiimote.py` | the remote straight over Bluetooth (reference, macOS-broken) |
 | `duckhunt/input/keyboard.py` | keyboard input (for development without hardware) |
 | `firmware/esp32_wiimote_bridge/` | **the current firmware**: ESP32-WROOM-32U ↔ Wii Remote → serial |
-| `firmware/esp32_lightgun/` | a gun built from scratch: ESP32-S3 + a bare PixArt camera (skeleton) |
-| `firmware/esp32cam_bezel/` | plan B: ESP32-S3-CAM (OV2640) with bezel detection, no IR LEDs (skeleton) |
 | `firmware/libs/Wiimote/` | the `Wiimote` library plus the Duck Hunt patch (`enable_ir`) |
 | `tools/slice_spritesheet.py` | slicing the NES sprite sheet into `assets/sprites/` |
 | `tools/slice_backgrounds.py` | slicing the NES background sheet into `assets/backgrounds/` |
@@ -830,7 +868,14 @@ and plays on in silence, the mixer handed back.
 | `tools/fake_gun.py` | the gun's UDP stream without the gun — testing the aim, the crosshair and the hits from a known aim point |
 | `docs/BUILD.md` | BOM, wiring and assembly of the hardware |
 | `docs/TODO.md` | what is left to do on the gun and the game, most useful first |
-| `docs/LEADERBOARD.md` | the plan for the leaderboard server and its console board |
+| `leaderboard/server.py` | the leaderboard's HTTP server: five routes over one SQLite file |
+| `leaderboard/store.py` | the SQL behind it — every attempt kept, best run per player queried |
+| `leaderboard/display.py` | the console board: the same scoreboard in a terminal |
+| `leaderboard/board.html` | the browser board for the second screen — a tube TV, rolling band and all |
+| `leaderboard/__main__.py` | `python3 -m leaderboard`: server plus a board, one command |
+| `leaderboard/seed.py` | filling the board from `scores.json`, or with demo rounds |
+| `duckhunt/net/leaderboard_client.py` | the game's side: post the round, queue it when the board is off |
+| `docs/LEADERBOARD.md` | the leaderboard server, its console board and how they are run |
 
 **The layers are independent:** `core` knows nothing about rendering or the
 hardware, so both frontends hook onto it, and every input source speaks the same
@@ -843,12 +888,11 @@ The bill of materials, the pinout and a step-by-step guide are in
 Wiimote path needs just the same (the remote's camera looks for exactly those four
 940 nm dots).
 
-Two alternatives to the Wiimote are kept alive as firmware skeletons: a gun built
-around a bare **PixArt IR camera** (SEN0158 / a desoldered Wii camera) on an
-ESP32-S3 — `firmware/esp32_lightgun/`; and an **ESP32-S3-CAM (OV2640)** that finds
-the monitor's bezel and needs no IR LEDs at all — `firmware/esp32cam_bezel/`,
-described in `docs/BUILD.md` → "Alternative camera path". The `x,y,b` protocol is
-the same either way, so the game needs no changes.
+The Wiimote path is the only one now. The two firmware skeletons that used to sit
+beside it — a gun around a bare PixArt camera, and an ESP32-S3-CAM finding the
+monitor's bezel without IR LEDs at all — are gone: the remote plays, so there is
+nothing left for a fallback to fall back from. Whatever replaces it later speaks
+the same `x,y,b`, and the game will not notice.
 
 ## References
 

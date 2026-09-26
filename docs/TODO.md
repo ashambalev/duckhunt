@@ -1,174 +1,156 @@
 # 🦆 What is left to do
 
-Written after the first evenings of live shooting with the Wii Remote bridge. The
-gun works: the four-corner homography is solving, the axes are settled, the
-beacons hold. What is below is what came out of those runs, most useful first.
+The gun works. The four-corner homography solves, the axes are settled, the
+beacons hold, the sights are corrected, and a round plays end to end — so the
+whole measurement list that used to live in this file has been retired, and with
+it the two firmware skeletons (the from-scratch PixArt gun and the bezel-finding
+ESP32-S3-CAM plan B). Nothing is falling back to anything: the remote plays.
 
-## 1. Measure how accurate the aim actually is
+Stage 7, the leaderboard, is built and running — the server, the console board on
+a screen of its own, and the game posting one row per round without drawing any of
+it ([`docs/LEADERBOARD.md`](LEADERBOARD.md)). What is left of it is the tail:
+autostart, and the two ideas below that only matter once people play often enough
+to have names worth finding. The milestone names are its.
 
-Everything else in this list assumes we know. We still do not: not one tagged
-sample has ever landed on a frame with four dots, so the summary has never been
-able to print the one number that matters — where the crosshair goes when you
-aim at a known point.
+## Next up
 
-**The run:** beacons on the corners of the game's picture and
-`[gun] frame = "picture"`, which is also what makes this measurement mean
-something simple — the tagged corner is then the corner of the playfield itself,
-expected at exactly 0 or 1, with no letterbox arithmetic in between. Stand where
-`--plan` says (about **2 m** for a 27"; the beacon rectangle should read ~35% of
-the frame in the summary, 50% is where corners start sliding out of view). Wait
-until `dots 4/4` holds while you sweep. Then aim at each corner of the picture in
-turn and **hold** its key for three seconds — `1` top-left, `2` top-right, `3`
-bottom-right, `4` bottom-left, `5` the centre.
+- [x] **M1 — store + server.** `leaderboard/store.py`, `leaderboard/server.py`.
+- [x] **M2 — the console board.** `leaderboard/display.py`.
+- [x] **M3 — the name.** Asked AFTER the round instead of before it, and after
+      every round rather than only a record one: a player who has just shot has a
+      number they want on the board, which is when they will gladly type. The
+      pixel frontend's `name` mode, `player.json` remembering the last one,
+      `--player` to skip it.
+- [x] **M4 — the game talks to the board.** `duckhunt/net/leaderboard_client.py`,
+      the `[leaderboard]` settings, the offline queue, and one line on the results
+      screen about delivery and nothing else — the board's own content stays on
+      the board's own screen. Checked both ways: with the server up the row is
+      there in under a second, and three rounds played with it down arrive once
+      each after it is back.
+- [ ] **M5 — the tail.** Done: `leaderboard/seed.py` (`--from-scores`,
+      `--demo N`), the ticker's record announcements, README and `LEADERBOARD.md`
+      rewritten to what was actually built. Left: **autostart** — `launchd` on the
+      Mac, `systemd` on the Pi, so the server and the board come up with the box
+      instead of with two terminals.
+- [ ] **M6 — if it earns it.** Shoot-the-letters name entry, `/api/events` so the
+      board reacts instead of polling, per-day and per-week boards on a rotating
+      panel.
 
-```bash
-.venv/bin/python tools/ir_view.py --plan --diagonal 27   # where to stand
-.venv/bin/python tools/ir_view.py
-.venv/bin/python tools/ir_view.py --summary logs/ir_view_<time>.jsonl
-```
+The by-hand checks that say M4 is really finished are at the end of
+`docs/LEADERBOARD.md`; the two that have caught things before are the same name in
+two cases landing on one row, and the server killed mid-evening.
 
-Before the gun comes out at all, `tools/fake_gun.py` proves the Mac side: it
-sends the bridge's own stream over UDP, so a crosshair that misses the picture's
-corner there is a `settings.toml` problem, not a hardware one.
+## After the leaderboard
 
-The summary then prints, per corner, what the firmware reported against what it
-should have been. Two things to read out of it: the offset (a constant one means
-the beacon rectangle does not match what `[gun]` says it is — fix it there)
-and the spread (that is the real precision, and the sensor's own contribution is
-only 0.1-0.2% of the screen, so anything larger is the hardware or the hand).
+These three wait for M5. All of them touch files another session is writing right
+now (`main.py`, `frontends/pygame_app.py`, `core/world.py`, `core/config.py`,
+`leaderboard/store.py`), so starting early means merging for no reason.
 
-**The game now measures the same thing from the inside, and corrects it** —
-`main.py --pygame --calibrate`, or **F1** from the title screen. Five round
-targets shot down the sights with the crosshair off; it prints the offset and
-the spread this section is after (`BEFORE`, `AFTER` and `YOUR HAND` on its
-results screen) and fits the correction rather than only reporting it. It does
-not replace this run: `ir_view` sees the dots, the quad and the frames with
-fewer than four beacons, which is where a *hardware* answer lives. It answers
-the other half — how far the gun is from where the SIGHTS are pointed, which no
-amount of homography can know.
+### 1. Two modes: a scored round and a practice round
 
-## 2. A hit zone, not a pinpoint crosshair — done
+Today there is one round and it is always for the record. Split it in two.
 
-A shot used to be a single point, which was harsher than the NES ever was and
-the wrong feel for a light gun — a shotgun scatters. Now `[gun] spread` is the
-shot's radius in fractions of the playfield width (0.04 by default):
-`Duck.distance_to()` in `core/models.py` gives the point-to-hitbox distance,
-`World.update` drops the **nearest** flying duck within the radius, and the pixel
-frontend draws the crosshair circle at exactly that radius — so the circle on
-screen is the hit zone. Being in `core`, the terminal frontend gets it too.
+**Scored** is what plays today — 40 ducks, shot down the sights — plus a cost for
+firing:
 
-What is left of the idea, if it ever wants more:
+- **40 rounds of ammunition.** The round ends when the ducks run out *or* the
+  magazine does, whichever comes first (the shot that empties it still counts, and
+  a duck already falling still lands). Today nothing counts ammunition at all:
+  `World.finished` looks only at how many ducks have been launched.
+- **+2 a duck, −1 a miss, −5 the dog.** The first two are cheap — `World` already
+  keeps `shots` and `hits`, and `[round] points` is the +2 knob under a new name.
+  The dog is not: it lives entirely in the pixel frontend, an animation driven by
+  the `landed` and `escaped` counters, and `core` has never heard of it. Something
+  has to cross that line — the honest version is the frontend handing the world
+  the dog's box while it is up, so the hit is decided where every other hit is.
+- **The crosshair stays toggleable, but a round that used it does not count.** `C`
+  (and `A` on the remote) already flips it; what is missing is the round
+  remembering that it was ever on, and that flag riding along in M4's payload so
+  the server can turn the row away.
 
-- A brief flash of the zone on the trigger would sell it further.
-- Scaling the radius with the duck's distance, or shrinking it as the round goes
-  on, is the classic way to add difficulty.
+**Practice** is for handing the gun to someone who has never held one: **10 ducks,
+slow, one in the air at a time**, crosshair on or off as they like, nothing sent
+to the board. One duck at a time is the only genuinely new mechanic — the pace
+today is a timer, so a `max_alive` cap is needed to make the next duck wait for
+the last one.
 
-## 3. Brightness, if dots still drop out
-
-The four beacons now read blob sizes 1-2 out of 15 with the camera at its most
-sensitive setting. It works, but there is no margin: a beacon at size 0 is a
-beacon that vanishes.
-
-- 100 Ω at 3 V is about 17 mA. **47 Ω gives ~35 mA** — twice the current, a third
-  of what the LED is rated for, and still ~27 h per set of cells. Expect 60-70%
-  more light rather than double: efficiency droops as the current climbs. Below
-  33 Ω the runtime halves and the light does not follow.
-- **Or add a third cell.** 3×AAA with 100–120 Ω draws the same current, lasts
-  longer, and evens the corners out: at 3 V a 0.2 V spread in forward voltage puts
-  two LEDs 11% apart in current, at 4.5 V only 6%. See `docs/BUILD.md` for the
-  full table.
-- Aim matters as much as current: they are directional, so point each one at
-  where you actually stand and sand the dome flat.
-- Watch it in the summary's per-beacon table — four similar numbers is what a
-  good set looks like.
-
-## 4. Playing on the TV
-
-Solved on paper, unmeasured in the room. Two knobs now do it, both on the Mac
-side (`settings.toml`), neither needing a flash:
+**Every number a setting, and the modes as files.** `--settings hard.toml` already
+works, so the two modes are two files over the same defaults rather than a second
+code path:
 
 ```toml
-[scene]
-scale = 6          # display px per px of the art; 0 = as big as fits
-[gun]
-frame = "picture"  # the beacons are on the picture's corners, not the screen's
+[round]
+ducks = 40         # 10 in practice.toml
+ammo = 40          # shots per round; 0 = unlimited (practice)
+scored = true      # false = never offered to the leaderboard
+
+[score]
+duck = 2           # a duck downed  (was [round] points = 1)
+miss = -1          # a shot that hit nothing
+dog = -5           # a shot that hit the dog
+
+[duck]
+max_alive = 0      # 0 = as many as the pace launches; 1 = one at a time
 ```
 
-Both knobs assume the beacons can go **on the picture**, i.e. on the glass. On
-the bezel (`frame = "display"` + `tools/ir_view.py --bezel`) the rectangle is the
-whole screen and the distance is the screen's own width x 4.8 — 5.8 m on a 55",
-which no room has. So the TV is the one place where the LEDs have to come off the
-bezel and onto the screen itself, or onto a bar standing in front of it.
+`main.py --practice` as a shortcut for `--settings practice.toml` keeps it one
+keystroke at the title screen.
 
-`frame = "picture"` is the right wiring on any screen: the beacons go on the
-corners of the letterboxed picture (printed at startup), the firmware's numbers
-are then playfield coordinates already, and the same settings play on the 27" and
-on the 55". `scale` is the distance knob — the picture, and the beacon rectangle
-with it, shrink together:
+Two things to decide before writing it:
 
-| 55" 4K | picture | distance |
-|---|---|---|
-| beacons on the screen's corners | 122 cm | 5.8 m |
-| `scale = 0` (11x, all that fits) | 89 cm | 4.3 m |
-| `scale = 6` | 49 cm | 2.3 m |
-| `scale = 4` | 32 cm | 1.6 m |
+- **May the score go negative?** −1 a miss with 40 shots means it can. Letting it
+  is the honest answer and the HUD can show it; clamping at zero only hides that
+  the round went badly.
+- **The board has to rank by score, not by hits.** `runs` has no `score` column
+  and `board()` orders by `hits DESC, shots ASC` — which stops meaning anything
+  once a miss costs a point and the dog costs five. So: `score` (and a `dog_hits`
+  counter) into the schema and the payload, the two indexes and both order-by
+  clauses changed, and `leaderboard/display.py` showing the number it ranks by.
+  Do this *with* the mode work, not after it, or the first scored round on the
+  board will be ranked by the old rule.
 
-Shrinking the beacon rectangle *alone* does not work, which the old version of
-this section got wrong: the firmware clamps the aim to its own rectangle
-(`constrain(u*1000, 0, 1000)`), so aiming past a beacon sticks there and the
-picture's outer band is unreachable. The picture has to come down with it.
+### 2. Name entry that finds the name you already have
 
-What is left to check with the gun in hand:
+Typing a name from scratch every evening is how `Женя`, `женя` and `Zhenya` end up
+as three players. The name entry should search as you type and offer what is
+already there to pick instead.
 
-- Whether ~12° of view is enough picture to enjoy. That angle is fixed by the
-  camera's field of view, so a 55" at 2.3 m looks exactly as big as a 27" at
-  2.0 m — the TV is worth it only if the room can give the distance back.
-- Whether a beacon rectangle as small as 32-49 cm holds four dots as reliably as
-  the 42 cm one on the 27" does (it should — same fraction of the frame), and how
-  much of the tolerance a centimetre of misplaced LED eats at that size.
-- The picture moves when the display's resolution changes, so the beacons have to
-  be re-stuck; `ir_view.py` logs the geometry in its meta line, and the game
-  prints it at startup, so a mismatch is visible.
+- **The server side is a route that does not exist yet**: the five are `/healthz`,
+  `/api/board`, `/api/stats`, `/api/player/<name>` and the POST. Add
+  `/api/players?q=` — prefix and substring, case- and accent-blind, returning the
+  name as it was first spelled with its best score and attempt count, so the
+  entry screen can show `Женя — 66 (12 tries)` rather than a bare list. SQLite's
+  FTS5 is there if `LIKE '%q%'` over a few hundred rows ever stops being enough,
+  which it will not.
+- **The client side** is the `name` mode M3 built, which currently offers exactly
+  one candidate — the last name used on this machine. What is missing is a list
+  under the field: the trigger or `TAB` to take a suggestion, `ENTER` to keep what
+  was typed as a new player.
+- **Picking an existing name is not overwriting anything.** This is already how
+  the store works and it is worth not breaking: every attempt is its own row, and
+  the board is a query for the best row per player (`_BEST_PER_PLAYER`). So a
+  worse round still gets stored — it moves `attempts` and nothing else — and the
+  board keeps showing the best. Nothing to build here beyond making the screen say
+  so, which stops it looking like the run was thrown away.
 
-A wider lens is still the only thing that makes the picture *bigger* rather than
-nearer — the `firmware/esp32_lightgun` path with a bare PixArt module and an M12
-lens. The Wii Remote's camera cannot be opened up.
+### 3. Clear out what is no longer used
 
-## 5. Latency, now that there is something to measure
+Once the modes and the name entry are in, a pass over what nobody calls any more.
+Known candidates, to be checked rather than trusted:
 
-The `G` key puts the stream's own numbers on the HUD: report rate, how clumped
-the reports are (p90 and worst interval), how often the beacons are out of view,
-how old the aim is. The run of 12 Sep read 67 reports/s median, p90 gap 34 ms,
-worst 1336 ms (a link drop), four dots in 61% of frames and 28% of reports with
-no dots at all — so what felt like lag was mostly the beacons dropping out, not
-the transport. Budget when the dots hold: ~15 ms of remote + bridge, up to 16 ms
-of frame, plus whatever the display adds; nothing in the pixel frontend smooths
-the aim, so there is no hidden filter to blame.
+- `duckhunt/input/wiimote.py` — the remote straight over Bluetooth, which macOS
+  never let work; kept as reference for a path that is now closed.
+- `core/scores.py` and `scores.json` — the local high-score table, once the board
+  is the real one. `leaderboard/seed.py` imports the file, so the import runs
+  first and the table goes after.
+- The alignment and calibration screens' overlap: `--align`, `--calibrate`, `F1`,
+  `F2`, `TAB` accumulated over three hardware evenings and some of it was for
+  beacons that are now stuck down for good.
+- `settings.toml` is 15 kB of comments for keys that were tuned once and never
+  touched again; splitting the hardware block out of the game block would make
+  both readable.
+- Dead ends in `tools/`: `ir_view.py` is 1300 lines, most of it written for
+  measurements that are now finished.
 
-Worth doing when the dropouts are fixed and the number still annoys:
-
-- **Raise the serial baud.** 115200 is ~1 ms per aim line; 921600 makes it 0.13.
-  Both sides change (`Serial.begin` in the firmware, `--baud` in the game).
-- **Keep the dot dump off while playing** (`o` in the bridge, or just do not leave
-  `ir_view` in `d` mode): at 60-70 reports/s a 60-byte dump line per report is
-  half the port's bandwidth, and the aim queues behind it.
-- **Measure the display's own contribution** before blaming the gun — HDMI, not
-  AirPlay, and no scaling.
-
-## 6. Smaller things
-
-- **The remote drops the link** every minute or two under continuous IR
-  reporting, re-pairing itself in under a second. Fresh AA cells first; the
-  summary counts the drops.
-- **Opening the serial port reboots the bridge** — the macOS CH340 driver drives
-  the reset line whatever pyserial asks. A 10 µF capacitor from EN to GND would
-  end it. The reboot itself is now harmless, and measured so: the bridge pages
-  the remote it used last time out of flash and has it back 5.6 s after boot with
-  nothing pressed, and failing that it scans in rounds until 1+2 is pressed. The
-  SYNC-after-launch dance is gone.
-- **The camera is at its most sensitive setting.** If a bright room starts
-  inventing dots, the gentler register block is one commented line below it in
-  the firmware.
-- **Redo the one-beacon pass** some quiet evening. It is the only measurement
-  whose answer came out wrong once (mislabelled top and bottom), and it would be
-  nice to have it agree with the other three.
+Run it as its own pass with the game playable at the end of each step, not as a
+tidy-up bolted onto a feature.

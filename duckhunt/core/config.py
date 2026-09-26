@@ -185,6 +185,22 @@ class GunSettings:
 
 
 @dataclass(frozen=True)
+class LeaderboardSettings:
+    """Where the scoreboard is, if there is one.
+
+    The board is a separate process on a screen of its own (see
+    docs/LEADERBOARD.md): the game posts one row per round and draws nothing of
+    what comes back. Off by default — with `enabled = false` the game never
+    touches the network and behaves exactly as it did before the board existed.
+    """
+    enabled: bool = False
+    url: str = "http://localhost:8420"
+    client_id: str = "duckhunt"      # which cabinet this is, in the server's log
+    timeout: float = 2.0             # seconds per attempt; three attempts, then the queue
+    token: str = ""                  # only if the server was started with --token
+
+
+@dataclass(frozen=True)
 class Settings:
     duck: DuckSettings = DuckSettings()
     round: RoundSettings = RoundSettings()
@@ -192,6 +208,7 @@ class Settings:
     scene: SceneSettings = SceneSettings()
     gun: GunSettings = GunSettings()
     sound: SoundSettings = SoundSettings()
+    leaderboard: LeaderboardSettings = LeaderboardSettings()
 
     def summary(self) -> str:
         """One-line summary of the values in effect — printed at startup."""
@@ -202,7 +219,8 @@ class Settings:
                 f"speed {d.speed_min:g}–{d.speed_max:g} · "
                 f"background {self.scene.background}"
                 f"{', fullscreen' if self.scene.fullscreen else ', windowed'}"
-                f"{f' at {self.scene.scale}x' if self.scene.scale else ''}")
+                f"{f' at {self.scene.scale}x' if self.scene.scale else ''}"
+                f"{f' · board {self.leaderboard.url}' if self.leaderboard.enabled else ''}")
 
 
 def _warn(msg: str) -> None:
@@ -359,8 +377,19 @@ def _validated(s: Settings) -> Settings:
     if fixes:
         snd = SoundSettings(**{**snd.__dict__, **fixes})
 
+    lb = s.leaderboard
+    if lb.enabled and not lb.url.startswith(("http://", "https://")):
+        _warn(f"[leaderboard] url must start with http:// or https://, not "
+              f"{lb.url!r} — the board is off for this run")
+        lb = LeaderboardSettings(**{**lb.__dict__, "enabled": False})
+    if lb.timeout <= 0:
+        _warn("[leaderboard] timeout must be greater than zero — using the default")
+        lb = LeaderboardSettings(**{**lb.__dict__,
+                                    "timeout": LeaderboardSettings().timeout})
+
     # whether such a background exists is the frontend's business, not this module's
-    return Settings(duck=duck, round=rnd, dog=dog, scene=scene, gun=gun, sound=snd)
+    return Settings(duck=duck, round=rnd, dog=dog, scene=scene, gun=gun, sound=snd,
+                    leaderboard=lb)
 
 
 def default_path() -> str:
@@ -382,7 +411,8 @@ def load(path: str | None = None) -> Settings:
         return Settings()
 
     for key in data:
-        if key not in ("duck", "round", "dog", "scene", "gun", "sound", "spawn"):
+        if key not in ("duck", "round", "dog", "scene", "gun", "sound",
+                       "leaderboard", "spawn"):
             _warn(f"unknown section [{key}] — skipped")
 
     # the spawn rate used to live in [spawn]; old files still work, but ask to move
@@ -400,4 +430,6 @@ def load(path: str | None = None) -> Settings:
         scene=_section(SceneSettings, data.get("scene", {}), "scene"),
         gun=_section(GunSettings, data.get("gun", {}), "gun"),
         sound=_section(SoundSettings, data.get("sound", {}), "sound"),
+        leaderboard=_section(LeaderboardSettings, data.get("leaderboard", {}),
+                             "leaderboard"),
     ))

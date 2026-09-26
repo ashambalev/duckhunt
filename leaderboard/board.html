@@ -1,0 +1,538 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DUCK HUNT — scoreboard</title>
+<link rel="icon" href="data:,">
+<!--
+  The scoreboard as a television set, for the second screen: open it, press F,
+  leave it there. Same server and same API as the terminal board
+  (leaderboard/display.py) — this one can do what a terminal cannot: a 4:3 tube
+  in a plastic cabinet, phosphor glow, scanlines, and the slow bright band
+  rolling down the picture that you get when a camera films a CRT.
+
+    http://localhost:8420/?color=amber&top=12&cabinet=wood
+
+  Query parameters: color=green|amber|white, cabinet=beige|graphite|wood,
+  ducks, top, refresh (seconds), speed (ticker characters per second),
+  attract=0 (hold the top board), plain=1 (no cabinet, no CRT effects),
+  key= (when the server was started with --token).
+  Keys: F fullscreen · C colour · B cabinet · SPACE panel · E effects on/off.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* green phosphor (P1) by default; [data-color] swaps the three below */
+    --fg: #7dff9b;
+    --fg-dim: #46c274;
+    --glow: rgba(90, 255, 140, 0.55);
+    --ink: #050a06;
+
+    /* The set's one measurement: H, the height of the 4:3 tube. Everything
+       else — bezel, knobs, type — is a fraction of it, so the whole television
+       scales as one object and the picture never changes proportion.
+       cabinet = H*1.12 tall and H*1.70 wide, which is where the two divisors
+       below come from. */
+    --H: min(94vh / 1.12, 94vw / 1.70);
+    --bezel: calc(var(--H) * 0.062);
+    --panel: calc(var(--H) * 0.24);     /* the control strip on the right */
+
+    /* beige plastic, sun-aged — [data-cabinet] swaps it */
+    --case: #b9ad94;
+    --case-hi: #d6cbb4;
+    --case-lo: #6f6752;
+    --case-ink: #4a4437;
+  }
+  :root[data-color="amber"] {
+    --fg: #ffcb5c; --fg-dim: #c89235; --glow: rgba(255, 190, 70, 0.5); --ink: #0a0703;
+  }
+  :root[data-color="white"] {
+    --fg: #e8f0ff; --fg-dim: #9fb0c8; --glow: rgba(200, 220, 255, 0.45); --ink: #05070a;
+  }
+  :root[data-cabinet="graphite"] {
+    --case: #3b3d40; --case-hi: #55585c; --case-lo: #191a1c; --case-ink: #0e0f10;
+  }
+  :root[data-cabinet="wood"] {
+    --case: #7a4a26; --case-hi: #a9743f; --case-lo: #3a2211; --case-ink: #2a1809;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%; margin: 0; overflow: hidden;
+    background: #07070a;
+    font-family: "VT323", "Courier New", ui-monospace, monospace;
+    color: var(--fg);
+    -webkit-font-smoothing: none;
+  }
+  /* the room the set stands in */
+  #room {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    background: radial-gradient(70% 70% at 50% 45%, #15151a 0%, #08080b 70%, #000 100%);
+  }
+
+  /* ---- the television ------------------------------------------------- */
+  #tv {
+    position: relative;
+    display: flex; align-items: stretch;
+    padding: var(--bezel);
+    gap: calc(var(--bezel) * 0.8);
+    border-radius: calc(var(--H) * 0.055);
+    background:
+      linear-gradient(160deg, var(--case-hi) 0%, var(--case) 26%,
+                              var(--case) 72%, var(--case-lo) 100%);
+    box-shadow:
+      inset 0 calc(var(--H) * 0.006) 0 rgba(255, 255, 255, 0.35),
+      inset 0 calc(var(--H) * -0.01) 0 rgba(0, 0, 0, 0.35),
+      0 calc(var(--H) * 0.05) calc(var(--H) * 0.12) rgba(0, 0, 0, 0.75),
+      0 0 calc(var(--H) * 0.4) rgba(0, 0, 0, 0.6);
+  }
+  /* injection-moulded plastic is never flat */
+  #tv::after {
+    content: ""; position: absolute; inset: 0; border-radius: inherit;
+    pointer-events: none; opacity: 0.16; mix-blend-mode: overlay;
+    background: repeating-linear-gradient(
+      92deg, rgba(255,255,255,0.35) 0 1px, rgba(0,0,0,0.3) 1px 2px);
+  }
+  :root[data-cabinet="wood"] #tv::after {
+    opacity: 0.3;
+    background: repeating-linear-gradient(
+      88deg, rgba(255,230,190,0.30) 0 2px, rgba(0,0,0,0.42) 2px 5px,
+             rgba(255,230,190,0.16) 5px 7px, rgba(0,0,0,0.3) 7px 11px);
+  }
+  /* two feet, because a television stands on something */
+  #tv::before {
+    content: ""; position: absolute; left: 12%; right: 12%;
+    bottom: calc(var(--H) * -0.028); height: calc(var(--H) * 0.03);
+    background: linear-gradient(var(--case-lo), #000);
+    border-radius: 0 0 calc(var(--H) * 0.02) calc(var(--H) * 0.02);
+    box-shadow: 0 calc(var(--H) * 0.02) calc(var(--H) * 0.05) rgba(0,0,0,0.8);
+  }
+
+  /* ---- the tube: 4:3, and the only thing that is not plastic ---------- */
+  #tube {
+    position: relative;
+    height: var(--H);
+    width: calc(var(--H) * 4 / 3);        /* 4:3, as it was until 1998 */
+    overflow: hidden;
+    border-radius: calc(var(--H) * 0.05);
+    background: radial-gradient(120% 100% at 50% 50%,
+                #0d1a10 0%, var(--ink) 62%, #000 100%);
+    /* the glass sits in the cabinet, not on it */
+    box-shadow:
+      inset 0 0 calc(var(--H) * 0.14) rgba(0, 0, 0, 0.95),
+      inset 0 0 calc(var(--H) * 0.02) rgba(255, 255, 255, 0.05),
+      0 0 0 calc(var(--H) * 0.008) #14140f,
+      0 0 calc(var(--H) * 0.03) rgba(0, 0, 0, 0.9);
+  }
+  #picture {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    padding: calc(var(--H) * 0.05) calc(var(--H) * 0.06) 0;
+    transform: scale(1.012);
+    text-shadow: 0 0 calc(var(--H) * 0.012) var(--glow),
+                 0 0 calc(var(--H) * 0.04) rgba(0, 0, 0, 0.6);
+    animation: flicker 5.3s steps(1) infinite;
+  }
+
+  /* ---- the board ------------------------------------------------------ */
+  #title {
+    text-align: center; letter-spacing: 0.34em; line-height: 1;
+    font-size: calc(var(--H) * 0.13); margin: 0 0 calc(var(--H) * 0.008);
+  }
+  #panel-name {
+    text-align: center; letter-spacing: 0.5em; color: var(--fg-dim);
+    font-size: calc(var(--H) * 0.038); margin-bottom: calc(var(--H) * 0.02);
+  }
+  #rows { flex: 1; display: flex; flex-direction: column;
+          justify-content: center; overflow: hidden; }
+  /* the row size is set from JS to whatever makes `top` rows fit the tube —
+     see fitRows(). A ten-row board and a three-row board both fill the picture
+     rather than one of them running off the bottom of it. */
+  #rows { font-size: calc(var(--H) * 0.062); }
+  .row {
+    display: flex; align-items: baseline; gap: 0.6ch;
+    font-size: inherit; line-height: 1.3; white-space: nowrap;
+  }
+  .row .rank { width: 3ch; margin-right: 0.8ch; text-align: right; color: var(--fg-dim); }
+  /* stored long, shown short: a name may be 50 characters, a row has room for
+     about 20 of them before the score has nowhere to go */
+  .row .name {
+    letter-spacing: 0.08em; max-width: 20ch;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row .dots {
+    flex: 1; min-width: 2ch; margin: 0 0.4ch;
+    border-bottom: calc(var(--H) * 0.005) dotted currentColor;
+    opacity: 0.35; transform: translateY(-0.35em);
+  }
+  .row .hits { width: 4ch; text-align: right; }
+  .row .unit, .row .acc, .row .tries, .row .when { color: var(--fg-dim); }
+  .row .acc { width: 5ch; text-align: right; }
+  .row .tries { width: 9ch; text-align: right; }
+  .row .when { width: 7ch; text-align: right; }
+  .row.top { color: var(--fg); }
+  .row:not(.top) { color: var(--fg-dim); }
+  .row.flash { animation: flash 0.45s steps(1) 8; }
+  @keyframes flash { 50% { background: var(--fg); color: var(--ink); } }
+  #empty { text-align: center; color: var(--fg-dim); font-size: inherit; }
+
+  #ticker {
+    flex: none; display: flex; align-items: center;
+    font-size: calc(var(--H) * 0.045);
+    padding-bottom: calc(var(--H) * 0.035);
+    overflow: hidden; white-space: pre;
+  }
+  #cursor { animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  #probe {
+    position: absolute; visibility: hidden; white-space: pre;
+    font-size: calc(var(--H) * 0.045);
+  }
+  body.down #picture { opacity: 0.5; text-shadow: none; animation: none; }
+
+  /* ---- the control strip: grille, knobs, badge, lamp ------------------ */
+  #controls {
+    width: var(--panel);
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: space-between;
+    padding: calc(var(--H) * 0.03) 0 calc(var(--H) * 0.02);
+    color: var(--case-ink);
+  }
+  #grille {
+    width: 78%; height: 34%;
+    border-radius: calc(var(--H) * 0.012);
+    background: repeating-linear-gradient(
+      to bottom,
+      var(--case-lo) 0 calc(var(--H) * 0.008),
+      transparent calc(var(--H) * 0.008) calc(var(--H) * 0.018));
+    box-shadow: inset 0 0 calc(var(--H) * 0.01) rgba(0,0,0,0.5);
+    opacity: 0.85;
+  }
+  .knob {
+    width: 62%; aspect-ratio: 1; border-radius: 50%;
+    background:
+      radial-gradient(60% 60% at 35% 30%, var(--case-hi) 0%, var(--case) 45%,
+                      var(--case-lo) 100%);
+    box-shadow: inset 0 0 calc(var(--H) * 0.012) rgba(0,0,0,0.55),
+                0 calc(var(--H) * 0.004) calc(var(--H) * 0.01) rgba(0,0,0,0.5);
+    position: relative;
+  }
+  /* the pointer notch, so a knob reads as a knob */
+  .knob::after {
+    content: ""; position: absolute; left: 50%; top: 12%;
+    width: calc(var(--H) * 0.008); height: 32%;
+    transform: translateX(-50%); border-radius: calc(var(--H) * 0.004);
+    background: var(--case-ink); opacity: 0.8;
+  }
+  .knob.tuner::after { transform: translateX(-50%) rotate(38deg);
+                       transform-origin: 50% 160%; }
+  .knob-label {
+    font-size: calc(var(--H) * 0.022); letter-spacing: 0.18em;
+    margin-top: calc(var(--H) * 0.006); opacity: 0.75;
+  }
+  #lamp {
+    width: calc(var(--H) * 0.022); aspect-ratio: 1; border-radius: 50%;
+    background: radial-gradient(#ff9a86 0%, #e8331b 60%, #6d0f05 100%);
+    box-shadow: 0 0 calc(var(--H) * 0.03) rgba(255, 70, 40, 0.85);
+    animation: lamp 4.1s ease-in-out infinite;
+  }
+  @keyframes lamp { 50% { opacity: 0.82; } }
+  #badge {
+    font-size: calc(var(--H) * 0.026); letter-spacing: 0.22em;
+    color: var(--case-ink); opacity: 0.8; text-align: center; line-height: 1.5;
+  }
+
+  /* ---- what makes it a tube ------------------------------------------- */
+  .fx { position: absolute; inset: 0; pointer-events: none; }
+  #scanlines {
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(0,0,0,0) 0 calc(var(--H) * 0.0022),
+      rgba(0,0,0,0.42) calc(var(--H) * 0.0022) calc(var(--H) * 0.0044));
+    mix-blend-mode: multiply;
+  }
+  #aperture {
+    background: repeating-linear-gradient(
+      to right,
+      rgba(255,0,0,0.055) 0 calc(var(--H) * 0.0012),
+      rgba(0,255,0,0.055) calc(var(--H) * 0.0012) calc(var(--H) * 0.0024),
+      rgba(0,0,255,0.055) calc(var(--H) * 0.0024) calc(var(--H) * 0.0036));
+    mix-blend-mode: screen;
+  }
+  /* THE ROLL: the band a camera sees drifting down a CRT, because the tube's
+     refresh and the shutter never quite agree */
+  #roll {
+    height: 26%;
+    background: linear-gradient(to bottom,
+      rgba(255,255,255,0) 0%, rgba(255,255,255,0.035) 35%,
+      rgba(255,255,255,0.085) 50%, rgba(255,255,255,0.035) 65%,
+      rgba(255,255,255,0) 100%);
+    animation: roll 7.5s linear infinite;
+    mix-blend-mode: screen;
+  }
+  @keyframes roll { 0% { transform: translateY(-30%); } 100% { transform: translateY(400%); } }
+  #vignette {
+    background:
+      radial-gradient(130% 105% at 50% 50%, rgba(0,0,0,0) 55%, rgba(0,0,0,0.85) 100%),
+      linear-gradient(105deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0) 38%);
+  }
+  @keyframes flicker {
+    0%, 96%, 100% { opacity: 1; } 97% { opacity: 0.93; }
+    98% { opacity: 1; } 99% { opacity: 0.96; }
+  }
+  #warmup {
+    background: #fff; animation: warmup 900ms ease-out forwards;
+  }
+  @keyframes warmup {
+    0%, 35% { transform: scaleY(0.004); opacity: 1; }
+    60% { transform: scaleY(1); opacity: 0.55; }
+    100% { transform: scaleY(1); opacity: 0; }
+  }
+
+  /* --plain / E: the data, none of the furniture */
+  body.plain #tv { padding: 0; background: none; box-shadow: none; }
+  body.plain #tv::before, body.plain #tv::after, body.plain #controls { display: none; }
+  body.plain #tube {
+    border-radius: 0; box-shadow: none; background: var(--ink);
+    height: 100vh; width: 100vw;
+  }
+  body.plain #scanlines, body.plain #aperture, body.plain #roll,
+  body.plain #vignette, body.plain #warmup { display: none; }
+  body.plain #picture { animation: none; text-shadow: none; transform: none; }
+
+  #help {
+    position: fixed; right: 1.2vmin; top: 1vmin;
+    font-size: 1.9vmin; color: #6b6b74; opacity: 0.55;
+    animation: fade 6s ease-in 4s forwards;
+  }
+  @keyframes fade { to { opacity: 0; } }
+</style>
+
+<div id="room">
+  <div id="tv">
+    <div id="tube">
+      <div id="picture">
+        <h1 id="title">DUCK HUNT</h1>
+        <div id="panel-name"></div>
+        <div id="rows"></div>
+        <div id="ticker"><span id="ticker-text"></span><span id="cursor">█</span></div>
+        <span id="probe">0000000000000000000000000000000000000000</span>
+      </div>
+      <div class="fx" id="scanlines"></div>
+      <div class="fx" id="aperture"></div>
+      <div class="fx" id="roll"></div>
+      <div class="fx" id="vignette"></div>
+      <div class="fx" id="warmup"></div>
+    </div>
+    <div id="controls">
+      <div id="grille"></div>
+      <div class="knob"></div>
+      <div class="knob-label">VOL</div>
+      <div class="knob tuner"></div>
+      <div class="knob-label">TUNE</div>
+      <div id="lamp"></div>
+      <div id="badge">DUCKTRON<br>DH-84</div>
+    </div>
+  </div>
+</div>
+<div id="help">F fullscreen · C colour · B cabinet · SPACE panel · E effects</div>
+
+<script>
+(() => {
+  "use strict";
+  const q = new URLSearchParams(location.search);
+  const num = (k, d) => { const v = parseFloat(q.get(k)); return isFinite(v) ? v : d; };
+  const COLORS = ["green", "amber", "white"];
+  const CABINETS = ["beige", "graphite", "wood"];
+  const cfg = {
+    ducks: num("ducks", 100),
+    top: num("top", 10),
+    refresh: Math.max(0.5, num("refresh", 2)) * 1000,
+    speed: num("speed", 9),
+    color: COLORS.includes(q.get("color")) ? q.get("color") : "green",
+    cabinet: CABINETS.includes(q.get("cabinet")) ? q.get("cabinet") : "beige",
+    key: q.get("key") || "",
+    attract: q.get("attract") !== "0",
+  };
+  document.documentElement.dataset.color = cfg.color;
+  document.documentElement.dataset.cabinet = cfg.cabinet;
+  if (q.get("plain") === "1") document.body.classList.add("plain");
+
+  // Two panels: the board, and who has played it most. (There was a TODAY panel
+  // here; a scoreboard that resets at midnight is a scoreboard people stop
+  // looking at, and the ticker still carries the day's best if it matters.)
+  const PANELS = [
+    { name: () => `TOP ${cfg.top}`, window: "all", order: "best" },
+    { name: () => "MOST ROUNDS",    window: "all", order: "attempts" },
+  ];
+  const PANEL_MS = 20000, FLASH_MS = 5000, SHOUT_MS = 30000;
+
+  let panel = 0, shown = 0, panelAt = Date.now();
+  let rows = [], stats = {}, up = false, error = "";
+  let lastId = null, flashName = null, flashAt = 0, shout = "", shoutAt = 0;
+
+  const el = {
+    tube: document.getElementById("tube"),
+    rows: document.getElementById("rows"),
+    panel: document.getElementById("panel-name"),
+    ticker: document.getElementById("ticker-text"),
+    tickerBox: document.getElementById("ticker"),
+    probe: document.getElementById("probe"),
+  };
+
+  const api = p => p + (cfg.key ? `&key=${encodeURIComponent(cfg.key)}` : "");
+
+  async function fetchJSON(path) {
+    const r = await fetch(path, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }
+
+  async function poll() {
+    const p = PANELS[panel];
+    try {
+      const [board, s] = await Promise.all([
+        fetchJSON(api(`/api/board?ducks=${cfg.ducks}&limit=${cfg.top}` +
+                      `&window=${p.window}&order=${p.order}`)),
+        fetchJSON(api(`/api/stats?ducks=${cfg.ducks}`)),
+      ]);
+      rows = board.rows || [];
+      shown = panel;
+      stats = s;
+      up = true; error = "";
+      noticeNewRun(s.latest);
+    } catch (e) {
+      // A board that goes blank because one packet was lost is worse than a
+      // stale one: keep what is on screen, dim it, and say so in the ticker.
+      up = false; error = String(e.message || e);
+    }
+    draw();
+  }
+
+  function noticeNewRun(latest) {
+    if (!latest || latest.id === lastId) return;
+    if (lastId !== null) {
+      flashName = (latest.name || "").toLowerCase();
+      flashAt = Date.now();
+      shout = latest.is_record
+        ? `*** NEW RECORD: ${latest.name.toUpperCase()} — ${latest.hits} DUCKS ***`
+        : `${latest.name.toUpperCase()} SHOT ${latest.hits} OF ${stats.ducks}`;
+      shoutAt = Date.now();
+    }
+    lastId = latest.id;
+  }
+
+  function tickerText() {
+    const parts = [];
+    if (shout && Date.now() - shoutAt < SHOUT_MS) parts.push(shout);
+    if (!up) parts.push(`LINK DOWN — RETRYING${error ? ` (${error})` : ""}`);
+    if (stats.record)
+      parts.push(`RECORD: ${stats.record.name.toUpperCase()} ${stats.record.hits} DUCKS`);
+    if (stats.rounds) {
+      const many = (n, one, more) => `${n} ${n === 1 ? one : more}`;
+      parts.push(many(stats.rounds, "ROUND PLAYED", "ROUNDS PLAYED"));
+      parts.push(many(stats.players, "SHOOTER", "SHOOTERS"));
+      parts.push(many(stats.ducks_down, "DUCK DOWNED", "DUCKS DOWNED"));
+    }
+    if (!parts.length) parts.push("NO ROUNDS YET — BE THE FIRST");
+    parts.push("PULL THE TRIGGER");
+    return parts.join("  ***  ") + "  ***  ";
+  }
+
+  const escape = s => s.replace(/[&<>"]/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  function draw() {
+    document.body.classList.toggle("down", !up);
+    el.panel.textContent = PANELS[shown].name();
+    el.rows.innerHTML = "";
+    if (!rows.length) {
+      const d = document.createElement("div");
+      d.id = "empty";
+      d.textContent = up ? "NO ROUNDS YET" : "WAITING FOR THE SERVER";
+      el.rows.appendChild(d);
+      return;
+    }
+    const lit = flashName && Date.now() - flashAt < FLASH_MS;
+    rows.forEach((r, i) => {
+      const div = document.createElement("div");
+      div.className = "row" + (i < 3 ? " top" : "") +
+        (lit && r.name.toLowerCase() === flashName ? " flash" : "");
+      const tries = r.attempts === 1 ? "1 TRY" : `${r.attempts} TRIES`;
+      div.innerHTML =
+        `<span class="rank">${i + 1}</span>` +
+        `<span class="name">${escape(r.name.toUpperCase())}</span>` +
+        `<span class="dots"></span>` +
+        `<span class="hits">${r.hits}</span><span class="unit"> DUCKS</span>` +
+        `<span class="acc">${Math.round(r.accuracy)}%</span>` +
+        `<span class="tries">${tries}</span>` +
+        `<span class="when">${r.finished_at.slice(5, 10)}</span>`;
+      el.rows.appendChild(div);
+    });
+    fitRows();
+  }
+
+  // The list is set in whatever type size makes all of it fit between the
+  // heading and the running line: ten names on a tube this tall means smaller
+  // letters than three do, and a row clipped by the bottom of the picture is the
+  // one thing a scoreboard must never do.
+  function fitRows() {
+    const n = Math.max(1, rows.length);
+    const max = el.tube.clientHeight * 0.062;
+    const size = Math.min(max, el.rows.clientHeight / n / 1.34);
+    el.rows.style.fontSize = `${Math.max(8, size)}px`;
+  }
+
+  // How many characters fit on the running line: measured off a hidden probe in
+  // the same font, so it is right at any size of tube and after any resize.
+  let room = 40;
+  function measure() {
+    const cw = el.probe.getBoundingClientRect().width / el.probe.textContent.length;
+    if (cw > 0) room = Math.max(10, Math.floor(el.tickerBox.clientWidth / cw) - 2);
+  }
+  addEventListener("resize", () => { measure(); fitRows(); });
+
+  // The ticker scrolls on its own clock — every frame — while the API is polled
+  // every couple of seconds. A slow server slows nothing down on screen.
+  let last = performance.now(), offset = 0, since = 0;
+  function frame(now) {
+    const dt = (now - last) / 1000; last = now;
+    if ((since += dt) > 1) { measure(); since = 0; }
+    const text = tickerText();
+    offset = (offset + cfg.speed * dt) % Math.max(1, text.length);
+    el.ticker.textContent =
+      "◀ " + (text + text + text).slice(Math.floor(offset), Math.floor(offset) + room);
+    if (cfg.attract && Date.now() - panelAt > PANEL_MS) {
+      panel = (panel + 1) % PANELS.length;
+      panelAt = Date.now();
+      poll();
+    }
+    requestAnimationFrame(frame);
+  }
+
+  addEventListener("keydown", e => {
+    const k = e.key.toLowerCase();
+    if (k === "f") {
+      document.fullscreenElement ? document.exitFullscreen()
+                                 : document.documentElement.requestFullscreen();
+    } else if (k === "c") {
+      cfg.color = COLORS[(COLORS.indexOf(cfg.color) + 1) % COLORS.length];
+      document.documentElement.dataset.color = cfg.color;
+    } else if (k === "b") {
+      cfg.cabinet = CABINETS[(CABINETS.indexOf(cfg.cabinet) + 1) % CABINETS.length];
+      document.documentElement.dataset.cabinet = cfg.cabinet;
+    } else if (k === " ") {
+      panel = (panel + 1) % PANELS.length; panelAt = Date.now(); poll();
+    } else if (k === "e") {
+      document.body.classList.toggle("plain");
+      measure(); fitRows();
+    }
+  });
+
+  measure();
+  poll();
+  setInterval(poll, cfg.refresh);
+  requestAnimationFrame(frame);
+})();
+</script>

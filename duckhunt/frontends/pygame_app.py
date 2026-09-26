@@ -24,9 +24,11 @@ import tomllib
 from collections import deque
 
 from ..core import calibration as calib_core
-from ..core import scores
+from ..core import player, scores
 from ..core.models import DuckState, Facing
 from ..core.world import World
+from ..net.leaderboard_client import LeaderboardClient
+from ..net.leaderboard_client import payload as board_payload
 from ..sound import Sounds
 from .calibrate import Calibrator
 
@@ -174,9 +176,9 @@ DOG_LAUGH = [
     "......KTK...KTK.....",
 ]
 
-# The controls, in one place: shown on the title screen and on the score table,
-# because a player standing three metres away with a gun in both hands has no way
-# to look them up. Remote buttons are named first where there is one — that is
+# The controls, in one place: shown on the title screen and on the result screen,
+# because a player standing three metres away with a gun in both hands has no
+# way to look them up. Remote buttons are named first where there is one — that is
 # the control they actually have in their hands.
 KEYMAP = [
     ("TRIGGER · SPACE", "start the round, and shoot in it"),
@@ -571,8 +573,16 @@ def _pick_background(backgrounds, wanted):
 
 class PygameFrontend:
     def __init__(self, settings=None, align=False, log_gun=False,
-                 calibrate=False, use_calibration=True):
+                 calibrate=False, use_calibration=True, player_name="",
+                 source_name=None):
         self.world = World(settings=settings)
+        # The name the round is sent to the board under. --player pre-fills it;
+        # otherwise the last one typed on this machine does (player.json), so a
+        # repeat player only has to press Enter.
+        self.player_name = player_name or player.load()
+        # which of the gun paths is in use — goes into the row, for reading the
+        # board back later and asking "which cabinet was this"
+        self.source_name = source_name
         # --calibrate: straight into the sighting-in screen, before the title
         self.calibrate = calibrate
         # --no-calibration: play on the gun's own numbers, calibration.json or
@@ -607,7 +617,10 @@ class PygameFrontend:
         pygame.init()
         assets_dir = os.path.join(os.path.dirname(__file__), "..", "..", "assets")
         settings = self.world.settings
-        table = scores.load()
+        # The board is a separate process on a screen of its own: the game posts
+        # one row per round and draws nothing that comes back. Off unless
+        # [leaderboard] enabled = true, and never on the game's own thread.
+        board = LeaderboardClient(settings.leaderboard)
         # the shot, the quack and the dog's laugh ([sound] in settings.toml).
         # Silent if the files or the audio device are missing — it says so once.
         sfx = Sounds(pygame, settings.sound, assets_dir)
@@ -854,7 +867,7 @@ class PygameFrontend:
             """Show the frame: centred in fullscreen, as-is in a window.
 
             The beacon marks go on here rather than in the gameplay branch, so
-            they are up on the intro and the score table too — taping beacons
+            they are up on the intro and the result screen too — taping beacons
             should not have to wait for the dog to finish sniffing.
             """
             if show_marks[0]:
@@ -980,15 +993,26 @@ class PygameFrontend:
             # its paws stand on DOG_FEET, but it never rises above the band
             screen.blit(frame, (x, max(DOG_TOP, DOG_FEET - frame.get_height())))
 
-        def draw_results(mode, name_buf, table, aborted):
-            """The round result, the high-score name entry and the best-scores table."""
+        def draw_results(mode, name_buf, aborted, status):
+            """The round result, and the name the row is sent to the board under.
+
+            Nothing of the leaderboard is drawn here on purpose — no ranks, no
+            other players, no table. The board is a screen of its own, and a game
+            that also showed a top ten would be two scoreboards quietly
+            disagreeing about which one you should be reading. What this screen
+            does say is whether the row got there, which is about the player's own
+            round rather than about the board.
+            """
             w = self.world
-            panel = pygame.Surface((int(W * 0.86), int(H * 0.84)), pygame.SRCALPHA)
+            # the name screen is four lines and wants to sit in the middle of the
+            # picture; the result screen carries the whole keymap under it
+            tall = 0.62 if mode == "name" else 0.84
+            panel = pygame.Surface((int(W * 0.86), int(H * tall)), pygame.SRCALPHA)
             panel.fill((0, 0, 0, 190))
             px, py = (W - panel.get_width()) // 2, (H - panel.get_height()) // 2
             screen.blit(panel, (px, py))
 
-            y = py + int(H * 0.04)
+            y = py + int(H * 0.05)
             draw_center(f"{w.hits} OF {w.total} DUCKS", big, y, (255, 225, 90))
             y += big.get_height() + 6
             draw_center(f"{w.shots} shots  ·  {w.accuracy:.0f}% accuracy  "
@@ -1000,47 +1024,62 @@ class PygameFrontend:
                 draw_center(f"STOPPED EARLY — {w.released} of {w.total} ducks "
                             "were let out", font, y, (255, 170, 120))
                 y += font.get_height()
-            y += int(H * 0.035)
+            y += int(H * 0.04)
 
             if mode == "name":
-                draw_center("NEW HIGH SCORE — TYPE YOUR NAME, THEN ENTER", font, y,
-                            (255, 225, 90))
-                y += font.get_height() + 8
+                draw_center("WHO WAS SHOOTING?", font, y, (255, 225, 90))
+                y += font.get_height() + 10
                 cursor = "_" if int(t_mode * 2) % 2 else " "
-                draw_center((name_buf or "") + cursor, big, y)
-                y += big.get_height() + int(H * 0.03)
-
-            draw_center("HIGH SCORES", font, y, (170, 220, 255))
-            y += font.get_height() + 8
-            if not table:
-                draw_center("empty so far — this round can be the first", font, y)
-                y += font.get_height()
-            for i, e in enumerate(table, 1):
-                # highlight the player's own fresh result
-                mine = (mode == "over" and e.hits == w.hits and e.shots == w.shots
-                        and e.ducks == w.total)
-                line = (f"{i:>2}. {e.name[:12]:<12} {e.hits:>3} ducks  "
-                        f"{e.accuracy:>3.0f}%  {e.date[5:]}")
-                draw_center(line, font, y, (255, 225, 90) if mine else (245, 245, 245))
-                y += font.get_height() + 2
-
-            if mode == "name":
-                draw_center("ENTER — SAVE   ·   ESC — SKIP", font,
-                            py + panel.get_height() - font.get_height() - int(H * 0.03),
+                # A name may be 50 characters long, and 50 characters in the big
+                # font run off both sides of the picture — so the field steps
+                # down a size once it is long, and the line is clipped to the
+                # panel rather than allowed to escape it.
+                typed = (name_buf or "") + cursor
+                face = big if len(typed) <= 14 else font
+                while face.size(typed)[0] > panel.get_width() - int(W * 0.06) \
+                        and len(typed) > 1:
+                    typed = typed[1:]          # keep the end: that is where the caret is
+                draw_center(typed, face, y)
+                draw_center("ENTER — SEND IT   ·   ESC — SKIP", font,
+                            py + panel.get_height() - font.get_height() - int(H * 0.04),
                             (200, 200, 200))
                 return
+
+            if status:
+                draw_center(status, font, y, (170, 220, 255))
+                y += font.get_height() + int(H * 0.02)
             # The same keymap as the title screen, under the same rule: the
             # round ends where the player is standing, not where the keyboard is.
             # The trigger is listed first because it is what starts the next one.
-            y += int(H * 0.03)
+            # The pair is kept together and never allowed above `y`, or on a short
+            # picture the keymap's headline climbs over the line before it.
             block = len(KEYMAP) * (km_font.get_height() + 2)
-            bottom = py + panel.get_height() - int(H * 0.03) - block
+            head = max(y, py + panel.get_height() - int(H * 0.03) - block
+                       - font.get_height() - 6)
             draw_center("TRIGGER OR SPACE — BACK TO THE TITLE SCREEN", font,
-                        max(y, bottom) - font.get_height() - 6, (255, 225, 90))
-            draw_keymap(max(y, bottom))
+                        head, (255, 225, 90))
+            draw_keymap(head + font.get_height() + 6)
 
-        # scene state: intro -> ready (countdown) -> play -> name (name entry)
-        # -> over (score table) -> intro again. Every round starts from the title
+        def finish_round(name):
+            """Keep the round: the local mirror, and the row on its way to the board.
+
+            `scores.json` stays exactly what it was — a per-machine mirror and the
+            thing that still works with no server anywhere. It is simply never
+            shown any more.
+            """
+            name = (name.strip() or "PLAYER")[:scores.NAME_MAX]
+            player.save(name)
+            if scores.qualifies(scores.load(), self.world.hits, self.world.shots):
+                scores.add(scores.from_world(self.world, name))
+            board.submit(board_payload(self.world, name,
+                                       settings.leaderboard.client_id,
+                                       self.source_name))
+
+        # scene state: intro -> ready (countdown) -> play -> name (who was
+        # shooting) -> over (the result) -> intro again. The name is asked AFTER
+        # the round and after every round, not only a record one: the board keeps
+        # every attempt, and a round nobody signed is a row nobody can find.
+        # Every round starts from the title
         # screen and waits for a trigger there, whether it is the first of the
         # session or the fifth — "play again" must not be one pull away from a
         # countdown that has already started.
@@ -1048,7 +1087,10 @@ class PygameFrontend:
         t_mode = 0.0
         DOG_START_X = -float(dog_walk[0].get_width())
         dog_x = DOG_START_X
-        name_buf = ""
+        name_buf = self.player_name
+        # the remembered name is offered, not imposed: the first character typed
+        # replaces it whole, so a new player does not have to backspace it out
+        name_fresh = True
         gun = settings.gun
         gun_is_picture = gun.frame == "picture"
         # The sights are not the camera: they sit above and behind it, the
@@ -1140,23 +1182,34 @@ class PygameFrontend:
                 elif mode == "name":
                     # while a name is being typed, keys go into the string, not the game
                     if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-                        table = scores.add(scores.from_world(self.world, name_buf))
-                        mode = "over"
+                        if not name_buf.strip():
+                            continue         # an empty line is not a name
+                        finish_round(name_buf)
+                        mode, t_mode = "over", 0.0
                     elif e.key == pygame.K_BACKSPACE:
-                        name_buf = name_buf[:-1]
+                        name_buf, name_fresh = name_buf[:-1], False
                     elif e.key == pygame.K_ESCAPE:
-                        mode = "over"            # changed their mind — do not save
-                    elif e.unicode.strip() and len(name_buf) < scores.NAME_MAX:
-                        name_buf += e.unicode
+                        # changed their mind — the round is not recorded anywhere
+                        mode, t_mode = "over", 0.0
+                    elif (e.unicode and e.unicode.isprintable()
+                          and (e.unicode != " " or name_buf)):
+                        # A space counts once there is something to separate —
+                        # names have surnames. Leading spaces do not, and neither
+                        # does anything unprintable that a key may deliver.
+                        if name_fresh:
+                            name_buf, name_fresh = "", False
+                            if e.unicode == " ":
+                                continue      # the space that cleared the old name
+                        if len(name_buf) < scores.NAME_MAX:
+                            name_buf += e.unicode
                 elif e.key == pygame.K_ESCAPE and mode in ("ready", "play"):
                     # Stop the round where it is and go to the result, with what
-                    # has been shot so far offered to the table — a hundred ducks
+                    # has been shot so far still counted and still signed for
+                    # the board — a hundred ducks
                     # is a long way to be stuck when the arm gets tired, and
                     # quitting the game outright would throw the score away.
                     self.world.stop()
-                    mode = ("name" if scores.qualifies(table, self.world.hits,
-                                                       self.world.shots) else "over")
-                    t_mode = 0.0
+                    mode, t_mode = "name", 0.0
                 elif e.key in (pygame.K_ESCAPE, pygame.K_q):
                     running = False
                 elif e.key == pygame.K_k:
@@ -1191,7 +1244,7 @@ class PygameFrontend:
                     print(f"[gun] lead = {aim_lead.lead:g} s "
                           f"({1000 * aim_lead.lead:.0f} ms ahead)")
                 elif e.key == pygame.K_F1 and mode in ("intro", "over"):
-                    # From the title screen or the score table only: sighting in
+                    # From the title screen or the result screen only: sighting in
                     # is a thing you do between rounds, and stepping out of a
                     # live round would leave ducks hanging in the air.
                     run_calibrator()
@@ -1213,7 +1266,8 @@ class PygameFrontend:
                     mode, t_mode = "ready", 0.0
                 elif e.key == pygame.K_SPACE and mode == "over":
                     self.world = World(settings=settings)   # a new round
-                    mode, t_mode, dog_x, name_buf = "intro", 0.0, DOG_START_X, ""
+                    mode, t_mode, dog_x = "intro", 0.0, DOG_START_X
+                    name_buf, name_fresh = player.load() or self.player_name, True
                     last_landed = last_escaped = 0
                     pop_kind = None
 
@@ -1266,11 +1320,12 @@ class PygameFrontend:
                 mode, t_mode, fire = "ready", 0.0, False
             elif fire and mode == "over":
                 # back to the title screen, not straight into the countdown: the
-                # pull that dismisses the score table is the one you make while
+                # pull that dismisses the result screen is the one you make while
                 # still looking at it, and it must not also be the pull that
                 # starts the next round
                 self.world = World(settings=settings)
-                mode, t_mode, dog_x, name_buf, fire = "intro", 0.0, DOG_START_X, "", False
+                mode, t_mode, dog_x, fire = "intro", 0.0, DOG_START_X, False
+                name_buf, name_fresh = player.load() or self.player_name, True
                 last_landed = last_escaped = 0
                 pop_kind = None
 
@@ -1321,10 +1376,10 @@ class PygameFrontend:
                     present()
                     continue
 
-            # ---- round results and the high-score table ----
+            # ---- round results and the name the row goes under ----
             if mode in ("name", "over"):
                 draw_background()
-                draw_results(mode, name_buf, table, self.world.stopped)
+                draw_results(mode, name_buf, self.world.stopped, board.line())
                 present()
                 continue
 
@@ -1349,8 +1404,7 @@ class PygameFrontend:
                 # hit ([sound] shot_on_hit turns it off there).
                 sfx.fired(hit)
             if self.world.finished:
-                mode = ("name" if scores.qualifies(table, self.world.hits,
-                                                   self.world.shots) else "over")
+                mode, t_mode = "name", 0.0
 
             # the dog's reactions to core events
             if pop_kind is None:
@@ -1439,4 +1493,5 @@ class PygameFrontend:
 
         if gun_log is not None:
             gun_log.close()
+        board.close()
         pygame.quit()

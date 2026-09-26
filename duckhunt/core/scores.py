@@ -16,7 +16,11 @@ from datetime import date
 
 TOP_N = 10
 SCORES_NAME = "scores.json"
-NAME_MAX = 12
+# How much name a player may type. Generous on purpose: a name, a surname, a
+# nickname in Cyrillic, all of it. This is what is STORED — what is SHOWN is the
+# boards' business, and both of them cut a long name down to the width they have
+# (see NAME_W in leaderboard/display.py and .name in leaderboard/board.html).
+NAME_MAX = 50
 
 
 @dataclass(frozen=True)
