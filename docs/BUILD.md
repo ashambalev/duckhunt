@@ -2,8 +2,10 @@
 
 Hardware build for the terminal Duck Hunt game. The gun tracks 4 infrared (IR)
 beacons around the screen with a PixArt IR camera, computes where the barrel is
-aimed, and streams `x,y,b` to the Mac over USB (later BLE). Matches the firmware
-in [`firmware/esp32_lightgun/esp32_lightgun.ino`](../firmware/esp32_lightgun/esp32_lightgun.ino).
+aimed, and streams `x,y,b` to the Mac over USB (later BLE). The firmware that
+actually runs today is the Wii Remote bridge,
+[`firmware/esp32_wiimote_bridge/`](../firmware/esp32_wiimote_bridge/) — same camera
+(the remote's own PixArt), same `x,y,b` out.
 
 Works on any display — monitor **or** big TV (it tracks the IR beacons, not the
 screen). Use **HDMI**, not AirPlay, to avoid input lag.
@@ -370,8 +372,9 @@ What you cannot cheat is the angle. The distance rule says the beacon rectangle
 fills ~35% of a 33° field of view, so the picture always ends up subtending about
 **12°** — the same apparent size on a 27" at 2 m as on a 55" at 4.3 m. With this
 camera a bigger TV buys you nothing unless the room can give back the distance;
-what buys a genuinely bigger picture is a **wider lens** (the PixArt + M12 path in
-`firmware/esp32_lightgun`), not a bigger screen.
+what buys a genuinely bigger picture is a **wider lens** — a bare PixArt module
+with an M12 lens, which the Wii Remote's sealed camera cannot be given — not a
+bigger screen.
 
 *Alternative, if you would rather not have batteries:* run a thin 2-wire lead (5 V +
 GND) along the bezel to all four corners, all 12 LEDs each with its own
@@ -427,44 +430,6 @@ Vf spread is a smaller share of the headroom.
    trigger, and boards. Keep the camera lens unobstructed.
 
 ---
-
-## Alternative camera path (Plan B): ESP32-S3-CAM / OV2640
-
-Use this if the PixArt IR camera (SEN0158 / Wii camera) is out of stock — while you
-keep hunting for a used Wiimote. It swaps the scarce IR-position camera for a cheap,
-everywhere-available **ESP32-S3-CAM** board with an **OV2640** sensor, and detects the
-**monitor's physical frame (bezel)** by edge detection instead of IR beacons — the
-approach used by [ddean-blip/esp32-lightgun](https://github.com/ddean-blip/esp32-lightgun).
-
-**What changes vs. the IR build:**
-
-| | IR path (primary) | ESP32-S3-CAM / OV2640 (Plan B) |
-|---|---|---|
-| Camera | PixArt SEN0158 / Wii cam | **ESP32-S3-CAM + OV2640**, €8–12, widely stocked |
-| Screen IR LEDs (beacons) | required | **not needed** (tracks the monitor edges) |
-| Extra MCU | separate ESP32-S3 | camera board **is** the MCU (all-in-one) |
-| Firmware | simple (camera returns 4 points) | heavier — frame capture + edge detection on-device |
-| Precision / latency | best (~4 ms) | medium (~20–30 FPS at QVGA) |
-| Room lighting | irrelevant | matters (needs contrast between screen and bezel) |
-| Output protocol | `x,y,b\n` | **same** `x,y,b\n` — the game/`serial_gun.py` is unchanged |
-
-**Plan-B BOM delta** (replaces core items #1 + #2):
-
-| Component | Spec | Qty | Notes |
-|---|---|---|---|
-| ESP32-S3-CAM board | ESP32-S3 + **OV2640**, PSRAM recommended | 1 | e.g. Freenove ESP32-S3-CAM, XIAO ESP32-S3 Sense |
-| (optional) M12 wide lens | ~120° cropped to ~85° | 1 | wider aiming cone |
-
-Everything else (trigger, wiring, recoil, wireless, enclosure) stays the same — **but
-you drop the whole beacon kit** (items #4, #5, #5a, #5b), since there are no beacons.
-
-**Firmware:** use [`firmware/esp32cam_bezel/esp32cam_bezel.ino`](../firmware/esp32cam_bezel/esp32cam_bezel.ino)
-(skeleton) instead of `esp32_lightgun.ino`. It captures a grayscale QVGA frame,
-finds the monitor rectangle, maps the aim point, and emits the same `x,y,b` lines.
-
-**Trade-off to accept:** lower precision and sensitivity to lighting. For a low-res
-ASCII game that's fine; if you later want pixel-perfect aiming, switch to the IR path
-once you get a Wii camera — the game and protocol don't change either way.
 
 ## Safety
 
