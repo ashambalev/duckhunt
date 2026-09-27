@@ -248,9 +248,9 @@ def test_practice_inherits_the_hardware_it_does_not_name():
 
     `config.load()` reads a single file and fills every unnamed key from the
     dataclass defaults, so a mode file used *instead of* settings.toml would quietly
-    revert the sight-in, the beacon rectangle and the lead — measured on one gun,
-    on one screen, over three evenings — and hand a first-timer the one gun in the
-    house that is not pointed at anything. It is an overlay for that reason.
+    revert the sight-in and the beacon rectangle — measured on one gun, on one
+    screen, over three evenings — and hand a first-timer the one gun in the house
+    that is not pointed at anything. It is an overlay for that reason.
     """
     from duckhunt.core.config import load
 
@@ -379,9 +379,9 @@ url = "http://elsewhere:9999"
 
 
 def test_an_unknown_mode_refuses_rather_than_playing_the_hard_round():
-    """`--practice` must never quietly become the scored round.
+    """`--mode practice` must never quietly become the scored round.
 
-    Falling back to the base settings would be the inverse of what the flag
+    Falling back to the base settings would be the inverse of what the name
     promises — forty ducks at full speed, a magazine to run out of, and the row
     posted as a record — handed to somebody who has never held the gun. The same
     answer covers a `--mode` nobody has written yet.
@@ -395,14 +395,13 @@ def test_an_unknown_mode_refuses_rather_than_playing_the_hard_round():
     only_scored = [Mode("SCORED", "", None, Settings())]
 
     class Args:
-        mode = None
-        practice = True
+        mode = "practice"
 
     with _pytest.raises(SystemExit) as exit_info:
         main.starting_mode(only_scored, Args())
     assert "practice" in str(exit_info.value)
 
-    Args.practice, Args.mode = False, "sudden death"
+    Args.mode = "sudden death"
     with _pytest.raises(SystemExit) as exit_info:
         main.starting_mode(only_scored, Args())
     assert "sudden death" in str(exit_info.value)

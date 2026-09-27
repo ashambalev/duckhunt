@@ -1,18 +1,17 @@
-"""Input from the ESP32 bridge over Wi-Fi (UDP) — Path B.
+"""Input over UDP — the same `x,y,b` lines, off the network instead of a port.
 
-The chain: Wiimote → (Bluetooth Classic) → ESP32 → (Wi-Fi UDP) → Mac.
-The ESP32 sends UDP (broadcast) packets carrying the same line as the Serial
-version:
+This is how `tools/fake_gun.py` plays the game with no hardware at all: it sends
+the lines a bridge would send, and the game cannot tell the difference. The
+protocol is deliberately the same one `serial_gun.py` reads, because the point
+of the split between the game and the gun is that anything able to say where it
+is pointing can drive it.
 
-    x,y,b\\n
-    x, y — the aim point 0..1000 (normalized to [0,1]);
-           -1,-1 if the beacons/dots are not visible
-    b    — button mask: bit0 (1) = trigger (the remote's B button)
+    .venv/bin/python main.py --udp
+    .venv/bin/python tools/fake_gun.py
 
-On the Mac side we simply listen on a UDP port and pair nothing over Bluetooth
-(which was the whole point: to move the link away from the temperamental macOS
-Bluetooth stack). No external dependencies — a plain socket. Matches the parser in
-`serial_gun.py`, so the game is unchanged.
+Each datagram is one line: `x,y,b` with the coordinates 0..1000 and a button
+mask. Only the newest datagram of a frame matters for the aim, but every one is
+read, because the trigger is an edge and a quick pull must not be lost.
 """
 
 from __future__ import annotations

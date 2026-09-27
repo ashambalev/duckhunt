@@ -1,6 +1,6 @@
 # 🦆 Practice — for handing the gun to someone who has never held one
 #
-#     python3 main.py --pygame --practice --serial /dev/tty.usbserial-0001
+#     python3 main.py --mode practice --serial /dev/tty.usbserial-0001
 #
 # This file is laid **over** settings.toml, not instead of it: it says the four
 # things that make a round practice and inherits every other value, the hardware

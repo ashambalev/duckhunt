@@ -8,9 +8,9 @@ __pycache__/
 # Virtual environment
 .venv/
 
-# The old local high-score table. Nothing writes it any more; an existing one is
-# still ignored here because it is per-machine, and `leaderboard.seed
-# --from-scores` can still put those evenings on the board.
+# The old local high-score table. Nothing writes it any more, and the rounds
+# that were in this repo's copy are on the board now; an existing one elsewhere
+# is still ignored here, because `leaderboard.seed --from-scores` reads it.
 scores.json
 
 # The sight correction: measured on one gun, one screen, one way of holding it
@@ -23,7 +23,7 @@ calibration.json
 logs/
 
 # The scoreboard's database, its queue of unsent rounds, and the name file that
-# the game no longer writes (an existing one is ignored rather than tracked)
+# the game stopped writing in Sept 2026 (an existing one is ignored, not tracked)
 leaderboard.db
 leaderboard.db-wal
 leaderboard.db-shm
@@ -31,5 +31,7 @@ leaderboard.log
 pending_runs.jsonl
 player.json
 
-# Playwright MCP scratch (screenshots, page snapshots)
+# Playwright MCP scratch (screenshots, page snapshots), and screenshots of the
+# board taken by hand next to them
 .playwright-mcp/
+board.png

@@ -1,30 +1,24 @@
-"""The whole scoreboard in one command: the server and a board, one window.
+"""The whole scoreboard in one command: the server, and the board in a browser.
 
-    python3 -m leaderboard --browser             # the tube-TV board in a browser
-    python3 -m leaderboard                       # the same board in this terminal
-    python3 -m leaderboard --browser --color amber --top 12
+    python3 -m leaderboard
+    python3 -m leaderboard --color amber --top 12
 
-Two boards, one server, the same flags for either: `--browser` opens the CRT page
-(`leaderboard/board.html`) in the default browser and leaves the server holding
-this terminal; without it the console board (`leaderboard/display.py`) is drawn
-here. The browser one is the better-looking of the two — phosphor glow, scanlines,
-and the bright band rolling down the picture that a camera sees on a real tube —
-and the terminal one is the one that works on a Pi with no desktop.
+The server runs in a thread inside this process and serves the board itself
+(`leaderboard/board.html`) at `/` — the tube-TV page, phosphor glow, scanlines
+and the bright band rolling down the picture that a camera sees on a real tube.
+This command opens it in the default browser and then holds the terminal:
+Ctrl-C stops the server, F in the page goes fullscreen (drag it to the second
+screen first).
 
-The server runs in a thread inside this process and the board draws in the
-foreground, so there is one thing to start and one thing to quit: `q` stops the
-board and takes the server down with it. Every flag that is not the server's is
-handed to `leaderboard.display`, so `--color`, `--top`, `--ducks`, `--speed`,
-`--ascii`, `--plain` and `--bell` all work here too.
+The server's per-run lines go to a file — `leaderboard.log` next to the
+database, `tail -f` away — because a terminal that is holding a server is not
+the place to read them.
 
-The server's per-run lines cannot share a terminal with a board being drawn on it,
-so they go to a file — `leaderboard.log` next to the database, `tail -f` away.
-
-Two processes are still the right thing when the board lives on a Pi and the
-server somewhere else, or when either has to be restarted without the other:
+Two processes are still the right thing when the board is on one machine and
+the server on another, or when either has to be restarted without the other:
 
     python3 -m leaderboard.server --port 8420 --db leaderboard.db
-    python3 -m leaderboard.display --url http://raspberrypi.local:8420
+    # ... and http://raspberrypi.local:8420/ in a browser on the other one
 """
 
 from __future__ import annotations
@@ -39,7 +33,29 @@ import urllib.request
 import webbrowser
 from urllib.parse import urlencode
 
-from . import display, server, store
+from . import server, store
+
+# What the page understands. Kept in step with board.html's own defaults — it
+# validates every one of these again, because a URL anyone can type is not a
+# thing to trust, and this parser is here so a typo is caught in the terminal
+# rather than silently ignored by the page.
+COLORS = ("green", "amber", "white")
+CABINETS = ("beige", "graphite", "wood")
+
+
+def default_ducks() -> int:
+    """The round size to show: whatever the game on this machine is set to.
+
+    The board and the game usually share a Mac, and `[round] ducks` is the one
+    setting they must agree on — a board showing 100-duck rounds while the game
+    plays 40 is empty for a reason nobody can see. On a box with no game there
+    is no settings.toml and 100 is the default.
+    """
+    try:
+        from duckhunt.core.config import load
+        return load().round.ducks
+    except Exception:                                   # noqa: BLE001
+        return 100
 
 
 def _already_serving(port: int) -> bool:
@@ -60,31 +76,31 @@ def _already_serving(port: int) -> bool:
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         prog="python3 -m leaderboard",
-        description="Duck Hunt scoreboard: the server and the console board, "
-                    "in one window. Flags not listed here go to the board — "
-                    "see `python3 -m leaderboard.display --help`.")
+        description="Duck Hunt scoreboard: the server, and the board in a browser.")
     ap.add_argument("--host", default="0.0.0.0",
                     help="what the server listens on (0.0.0.0: the game may be "
                          "on another machine on the LAN)")
     ap.add_argument("--port", type=int, default=8420)
     ap.add_argument("--db", default=store.default_path())
-    ap.add_argument("--ducks", type=int, default=None,
-                    help="round size the board shows (default: [round] ducks "
-                         "from the game's settings.toml)")
-    ap.add_argument("--token", default="",
-                    help="shared secret; the game sends it in X-Duckhunt-Key")
-    ap.add_argument("--browser", action="store_true",
-                    help="open the tube-TV board in a browser instead of drawing "
-                         "the console one here; the server then holds this terminal")
     ap.add_argument("--log", metavar="FILE",
                     help="where the server's per-run lines go "
                          "(default: leaderboard.log next to the database; "
                          "`-` throws them away)")
-    args, rest = ap.parse_known_args(argv)
-
-    if "--url" in rest:
-        ap.error("--url is for `python3 -m leaderboard.display`: this command "
-                 "runs the server itself, and the board reads it on 127.0.0.1")
+    ap.add_argument("--ducks", type=int, default=default_ducks(),
+                    help="round size the board shows (default: [round] ducks "
+                         "from the game's settings.toml)")
+    ap.add_argument("--top", type=int, default=10, help="rows on the board")
+    ap.add_argument("--color", choices=COLORS, default="green",
+                    help="the phosphor")
+    ap.add_argument("--cabinet", choices=CABINETS, default="beige",
+                    help="the plastic around the tube")
+    ap.add_argument("--refresh", type=float, default=2.0,
+                    help="seconds between polls")
+    ap.add_argument("--speed", type=float, default=7.0,
+                    help="how fast the line along the bottom runs, characters/s")
+    ap.add_argument("--plain", action="store_true",
+                    help="no glow, no scanlines, no rolling band — a flat board")
+    args = ap.parse_args(argv)
 
     httpd = None
     if _already_serving(args.port):
@@ -97,45 +113,30 @@ def main(argv: list[str] | None = None) -> None:
         server.log_stream = (open(os.devnull, "w") if args.log == "-"
                              else open(log_path, "a", encoding="utf-8"))
         try:
-            httpd = server.build(args.host, args.port, args.db, args.token)
+            httpd = server.build(args.host, args.port, args.db)
         except OSError as exc:
             ap.error(f"cannot listen on {args.host}:{args.port} ({exc})")
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         where = "" if args.log == "-" else f", runs logged to {log_path}"
         print(f"leaderboard on :{args.port}  db={args.db}{where}", file=sys.stderr)
 
+    params = {"ducks": args.ducks, "top": args.top, "color": args.color,
+              "cabinet": args.cabinet, "refresh": args.refresh,
+              "speed": args.speed}
+    if args.plain:
+        params["plain"] = 1
+    url = f"http://localhost:{args.port}/?{urlencode(params)}"
+    print(f"the board: {url}\n"
+          f"F in the page goes fullscreen — drag it to the second screen "
+          f"first.\nCtrl-C here stops the server.", file=sys.stderr)
+    webbrowser.open(url)
     try:
-        if args.browser:
-            # the same flags the console board takes, turned into the page's
-            # query string — checked by the board's own parser, so a typo is
-            # caught here rather than silently ignored by a URL
-            d = display.build_parser().parse_args(rest)
-            if args.ducks is not None:
-                d.ducks = args.ducks
-            params = {"ducks": d.ducks, "top": d.top, "color": d.color,
-                      "refresh": d.refresh, "speed": d.speed}
-            if d.plain:
-                params["plain"] = 1
-            if args.token:
-                params["key"] = args.token
-            url = f"http://localhost:{args.port}/?{urlencode(params)}"
-            print(f"the board: {url}\n"
-                  f"F in the page goes fullscreen — drag it to the second screen "
-                  f"first.\nCtrl-C here stops the server.", file=sys.stderr)
-            webbrowser.open(url)
-            if httpd is not None:
-                httpd.serve_forever()
-            else:
-                # somebody else's server is serving it; nothing for us to hold
-                print("that server is not ours to keep running — this command is "
-                      "done", file=sys.stderr)
+        if httpd is not None:
+            httpd.serve_forever()
         else:
-            forward = list(rest) + ["--url", f"http://127.0.0.1:{args.port}"]
-            if args.ducks is not None:
-                forward += ["--ducks", str(args.ducks)]
-            if args.token:
-                forward += ["--token", args.token]
-            display.main(forward)
+            # somebody else's server is serving it; nothing for us to hold
+            print("that server is not ours to keep running — this command is "
+                  "done", file=sys.stderr)
     except KeyboardInterrupt:
         pass
     finally:

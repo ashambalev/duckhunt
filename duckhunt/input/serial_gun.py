@@ -51,11 +51,6 @@ class SerialGunInput(InputSource):
         self._btn_prev = 0  # for edge-detecting the shot
         self.stats = GunStats()
         self._hushed = False   # have we asked the bridge to stop its dot dumps
-        # The bridge's own '#' lines, kept rather than dropped: "# New remote,
-        # authenticating..." in the middle of a round is a link drop, which is
-        # the difference between "the gun lags" and "the gun stopped for a
-        # second". The frontend drains this into the --log-gun log.
-        self.statuses = []
 
     def poll(self) -> AimState:
         fire = False
@@ -82,8 +77,6 @@ class SerialGunInput(InputSource):
             # The bridge also reports its beacon count on this port; the '#'
             # lines are status, not aim.
             if raw.startswith(b"#"):
-                if len(self.statuses) < 200:      # a round cannot say more
-                    self.statuses.append(raw.decode("ascii", "replace"))
                 continue
             parsed = self._parse(raw)
             if parsed is None:
@@ -124,15 +117,6 @@ class SerialGunInput(InputSource):
         nx = min(1.0, max(0.0, xi / 1000.0))
         ny = min(1.0, max(0.0, yi / 1000.0))
         return nx, ny, btn
-
-    def command(self, ch: str) -> bool:
-        """Send one of the bridge's single-character commands ('r' toggles the
-        recoil, 'o'/'s'/'d' the dot dump). True if it went out."""
-        try:
-            self._ser.write(ch.encode("ascii")[:1])
-            return True
-        except Exception:
-            return False
 
     def close(self) -> None:
         try:

@@ -3,7 +3,7 @@
 The values live in `settings.toml` in the project root. The file may be absent —
 then the defaults from this module are used (they are spelled out in
 settings.toml as well, so editing them there is the convenient way). Another
-file: `--settings path.toml` or the `DUCKHUNT_SETTINGS` environment variable.
+file: `--settings path.toml`.
 
 All sizes and speeds are IN FRACTIONS OF THE SCREEN, like the rest of the
 geometry in `models`: a width of 0.09 = 9 % of the playfield width, a speed of
@@ -18,7 +18,6 @@ import sys
 import tomllib
 from dataclasses import dataclass, fields
 
-SETTINGS_ENV = "DUCKHUNT_SETTINGS"
 SETTINGS_NAME = "settings.toml"
 
 # What a MODE may change, and nothing else. A mode is a file laid OVER
@@ -148,22 +147,6 @@ class SceneSettings:
     # actually used is printed at startup, so you can read the number off and
     # pin it here.
     display: int = -1
-    # How the picture is fitted to the screen:
-    #   "height"  — as tall as the screen, aspect kept, bars left and right only.
-    #               The art pixels then land on a non-whole number of display
-    #               pixels, so some come out a pixel bigger than others — the
-    #               scaling stays nearest-neighbour, nothing is blurred, and the
-    #               picture is as big as it can be. This is what plays best.
-    #   "integer" — the pixel-purist fit: a whole-number scale, letterboxed on
-    #               all four sides, every art pixel exactly the same size.
-    fit: str = "height"
-    # How many display pixels one pixel of the art becomes, for fit = "integer"
-    # (and the closest whole number is reported for "height"). 0 = as big as fits.
-    # A smaller number deliberately shrinks the picture, which is the light gun's
-    # distance knob: the camera has to hold all four beacons in frame, so the
-    # playing distance is about 4.8x the width of the beacon rectangle. Half the
-    # scale, half the distance — it is how a 55" TV becomes playable from a sofa.
-    scale: int = 0
 
 
 @dataclass(frozen=True)
@@ -195,18 +178,6 @@ class GunSettings:
     # than the NES ever was. The crosshair is drawn at exactly this size, so what
     # you see is what you hit. 0 = the old pinpoint.
     spread: float = 0.04
-    # Seconds of aim to extrapolate ahead, to hide the link's own delay. The
-    # chain costs ~40-55 ms (remote -> radio -> bridge -> one frame -> vsync,
-    # the last two measured at 16.7 ms on this Mac), and this advances the
-    # crosshair along its current velocity by that much. 0 = off; 0.02-0.045 is
-    # the useful range, and too much makes it overshoot and jitter.
-    lead: float = 0.0
-    # The ceiling on that, in seconds. When the link stalls the last report goes
-    # stale, and the crosshair is advanced by `lead` PLUS however stale it is —
-    # which is the right thing to do while the barrel keeps moving and the wrong
-    # thing to do forever, so it stops here. The crosshair then holds a bounded
-    # distance ahead of the last thing the gun said instead of sailing off.
-    lead_max: float = 0.06
     # Whether the crosshair is drawn when the round starts. It is not a cosmetic
     # setting any more: a scored round is shot down the sights, and one that had
     # the crosshair on at any point of the round is not offered to the
@@ -244,7 +215,6 @@ class LeaderboardSettings:
     url: str = "http://localhost:8420"
     client_id: str = "duckhunt"      # which cabinet this is, in the server's log
     timeout: float = 2.0             # seconds per attempt; three attempts, then the queue
-    token: str = ""                  # only if the server was started with --token
 
 
 @dataclass(frozen=True)
@@ -284,7 +254,6 @@ class Settings:
                 f"speed {d.speed_min:g}–{d.speed_max:g} · "
                 f"background {self.scene.background}"
                 f"{', fullscreen' if self.scene.fullscreen else ', windowed'}"
-                f"{f' at {self.scene.scale}x' if self.scene.scale else ''}"
                 f"{f' · board {self.leaderboard.url}' if self.leaderboard.enabled else ''}")
 
 
@@ -401,13 +370,6 @@ def _validated(s: Settings) -> Settings:
         dog = DogSettings(**{**dog.__dict__, **fixes})
 
     scene = s.scene
-    if scene.fit not in ("height", "integer"):
-        _warn(f'[scene] fit must be "height" or "integer", not {scene.fit!r} — '
-              'using "height"')
-        scene = SceneSettings(**{**scene.__dict__, "fit": "height"})
-    if scene.scale < 0:
-        _warn("[scene] scale cannot be negative — using 0 (as big as fits)")
-        scene = SceneSettings(**{**scene.__dict__, "scale": 0})
     if scene.display < -1:
         _warn("[scene] display is a monitor number from 0, or -1 for SDL's "
               "choice — using -1")
@@ -423,14 +385,9 @@ def _validated(s: Settings) -> Settings:
         _warn(f'[gun] crosshair must be "auto", "on" or "off", not '
               f"{gun.crosshair!r} — using the default")
         fixes["crosshair"] = gbase.crosshair
-    for name in ("spread", "lead", "lead_max"):
-        if getattr(gun, name) < 0:
-            _warn(f"[gun] {name} cannot be negative — using 0")
-            fixes[name] = 0.0
-    if fixes.get("lead_max", gun.lead_max) < fixes.get("lead", gun.lead):
-        _warn("[gun] lead_max is below lead — raising it to lead, which is the "
-              "least it can usefully be")
-        fixes["lead_max"] = fixes.get("lead", gun.lead)
+    if gun.spread < 0:
+        _warn("[gun] spread cannot be negative — using 0")
+        fixes["spread"] = 0.0
     if gun.spread > 0.5:
         _warn("[gun] spread is half the screen wide — capping it at 0.5")
         fixes["spread"] = 0.5
@@ -442,11 +399,11 @@ def _validated(s: Settings) -> Settings:
         gun = GunSettings(**{**gun.__dict__, **fixes})
     # A beacon rectangle SMALLER than the picture cannot work: the firmware
     # clamps the aim to its own rectangle (0..1000), so aiming past a beacon
-    # sticks there and the picture's outer band is unreachable. Shrinking the
-    # picture with [scene] scale is the way to play closer, not this.
+    # sticks there and the picture's outer band is unreachable.
     if gun.frame == "picture" and (gun.beacon_w < 1 or gun.beacon_h < 1):
         _warn("[gun] beacons inside the picture — the crosshair will not reach "
-              "its edge; shrink the picture with [scene] scale instead")
+              "its edge; the beacons have to be at least as far apart as the "
+              "picture's own corners")
 
     snd, sbase = s.sound, SoundSettings()
     fixes = {}
@@ -546,7 +503,7 @@ def load(path: str | None = None, overlay: str | None = None) -> Settings:
     the house that is not aimed at anything. So a mode says the four numbers that
     make it a mode and inherits every other one, hardware included.
     """
-    path = path or os.environ.get(SETTINGS_ENV) or default_path()
+    path = path or default_path()
     data = read_toml(path) if os.path.exists(path) else {}
     if data is None:
         data = {}

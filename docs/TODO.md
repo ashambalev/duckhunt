@@ -6,8 +6,8 @@ whole measurement list that used to live in this file has been retired, and with
 it the two firmware skeletons (the from-scratch PixArt gun and the bezel-finding
 ESP32-S3-CAM plan B). Nothing is falling back to anything: the remote plays.
 
-Stage 7, the leaderboard, is built and running — the server, the console board on
-a screen of its own, and the game posting one row per round without drawing any of
+Stage 7, the leaderboard, is built and running — the server, the board on a
+screen of its own, and the game posting one row per round without drawing any of
 it ([`docs/LEADERBOARD.md`](LEADERBOARD.md)). It is finished through M5, and the one
 milestone still open is waiting on hardware rather than on anyone writing it. The
 milestone numbers are `LEADERBOARD.md`'s, and they match it.
@@ -16,14 +16,16 @@ milestone numbers are `LEADERBOARD.md`'s, and they match it.
 rounds, and the clear-out. What is left in this file is the two things blocked on a
 box that does not exist, one rough edge in the smallest window, and M7 — the list of
 things that only earn themselves once the game is played often enough to ask for
-them. There is a test suite now: `.venv/bin/python -m pytest tests/ -q`, 87 tests
+them. There is a test suite now: `.venv/bin/python -m pytest tests/ -q`, 102 tests
 over the store's queries, the routes, the two rounds' arithmetic and the name screen
 driven headlessly.
 
 ## Next up
 
 - [x] **M1 — store + server.** `leaderboard/store.py`, `leaderboard/server.py`.
-- [x] **M2 — the console board.** `leaderboard/display.py`.
+- [x] **M2 — the board.** `leaderboard/board.html`, served at `/`. (A console
+      board, `leaderboard/display.py`, was the first one and is gone — see the
+      clear-out below.)
 - [x] **M3 — the name.** Asked AFTER the round instead of before it, and after
       every round rather than only a record one: a player who has just shot has a
       number they want on the board, which is when they will gladly type. The
@@ -36,28 +38,31 @@ driven headlessly.
       the board's own screen. Checked both ways: with the server up the row is
       there in under a second, and three rounds played with it down arrive once
       each after it is back.
-- [x] **M5 — seeding.** `leaderboard/seed.py` (`--from-scores`, `--demo N`), the
+- [x] **M5 — seeding.** `leaderboard/seed.py` (`--from-scores`; `--demo N` was
+      here too, and went in the clear-out below), the
       ticker's record announcements, README and `LEADERBOARD.md` rewritten to what
       was actually built.
 - [ ] **M6 — autostart. Blocked on the Pi existing, and not otherwise wanted.**
       `systemd` units for the Pi, a `launchd` plist for the Mac. Two things this
       is *not* for, both of which it used to claim: it is not two terminals down
-      to one — `python3 -m leaderboard` already runs the server in a thread with
-      the board in the foreground, one thing to start and `q` to quit both — and
+      to one — `python3 -m leaderboard` already runs the server in a thread and
+      opens the board, one thing to start and Ctrl-C to stop — and
       it is not a round saved, because a round posted with the server down goes
       to `pending_runs.jsonl` and arrives when it is back. What it is for is the
       box in a room with no keyboard on it, powered up by a wall switch, which is
       the Pi under the TV and does not exist yet. Written before that box is
       here, a unit is a guessed user, a guessed path and a guessed tty that
       nobody can run once to check.
-- [ ] **The smallest window clips the keymap.** A results screen carrying both
-      `STOPPED EARLY` (or `OUT OF AMMUNITION`) *and* a delivery line needs about
-      510 px of panel, and the smallest windowed picture is 450 px tall, so the last
-      row or two of the keymap goes off the bottom. Pre-existing — the old layout
-      needed 482 px of the same 450 — and invisible in fullscreen, which is how the
-      game is actually played. The real cause is that the fonts are fixed at 22/40 pt
-      while the picture is not; the fix is font sizes measured off the picture, the
-      way the keymap, the HUD and the name screen's own two lines already are.
+- [ ] **The smallest window clips the keymap — probably not any more.** A results
+      screen carrying both `STOPPED EARLY` (or `OUT OF AMMUNITION`) *and* a
+      delivery line needed about 510 px of panel against the 450 px of the
+      smallest windowed picture. The keymap lost four of its twelve rows in the
+      Sept 2026 clear-out (TAB, L, K and the crosshair's lead are gone), which
+      should be more than the overflow was — unmeasured, and worth one look in a
+      small window. The real cause is unchanged: the fonts are fixed at 22/40 pt
+      while the picture is not, and the fix is font sizes measured off the
+      picture, the way the keymap, the HUD and the name screen's lines already
+      are.
 - [ ] **M7 — if it earns it.** Shoot-the-letters name entry, `/api/events` so the
       board reacts instead of polling, per-day and per-week boards on a rotating
       panel.
@@ -94,8 +99,8 @@ nothing sent to the board.
 **Chosen in the game, not at launch** (Sept 2026). The title screen cycles the
 modes with **M**, or **A on the remote** — which is the binding that matters,
 since handing the gun over and taking it back is exactly when the round changes
-and the player is three metres from the keyboard. `--practice` / `--mode NAME`
-now only say which round the evening opens on. What made it switchable is that
+and the player is three metres from the keyboard. `--mode NAME` now only says
+which round the evening opens on. What made it switchable is that
 the rule was written down and enforced (`config.MODE_SECTIONS`): a mode owns
 `[round]`, `[duck]`, `[score]` and `[gun] crosshair`, and nothing else — so the
 window, the sight-in, the beacons, the sounds and the board never move, and a
@@ -208,7 +213,9 @@ but a move:
   that format, so it has tests of its own now (`tests/test_seed_import.py`),
   including a malformed row and a broken file.
 
-**Not dead: the alignment and calibration screens.** The suspicion was that three
+**Not dead: the alignment and calibration screens.** *(Half of this was
+overtaken by the second clear-out below: the alignment targets are gone, the
+sighting-in screen stays.)* The suspicion was that three
 hardware evenings had left redundant controls behind. They had not. `--calibrate` is
 literally F1 called at startup and `--align` is TAB's boolean pre-flipped — both
 documented in the README as the way the procedure is run, so they are shortcuts, not
@@ -220,7 +227,8 @@ in the README now. TAB (where to tape the beacons) and F1 (sight parallax) measu
 two unrelated things. Nothing here was removed. Worth knowing before anyone tries
 again: `tests/` covers none of it.
 
-**Not dead: `tools/ir_view.py`.** 1321 lines, and the parts that look like finished
+**Not dead: `tools/ir_view.py`.** *(Still true, and it is 1048 lines now:
+`--trend` went with the A/B ladders it was built to read.)* 1321 lines, and the parts that look like finished
 measurements are the parts that come back the first time the rig moves —
 `--bezel` computes the `[gun] beacon_*` numbers that are baked into `settings.toml`
 today, and `settings.toml` quotes the exact invocation that produced them. `--plan`
@@ -242,3 +250,62 @@ about one particular room) below it. If the split is wanted anyway, it is a smal
 change on top of this and the fence is where it would cut.
 
 
+
+### 4. ~~Clear out the experiments that have been answered~~ — done (Sept 2026)
+
+The first clear-out asked "what is unused?" and mostly found things that were
+still in use. This one asked a different question — **what was built to answer a
+question that now has an answer?** — and most of the list went.
+
+**The crosshair's lead.** `AimLead`, the **L** ladder, `[gun] lead` / `lead_max`,
+the `lead` field in the gun log, and seventy lines of measurement tables in
+`settings.toml`. It works and it hits more ducks; it also takes the crosshair off
+the barrel the moment you move, and a sight that does not sit where the gun is
+pointed is not a sight. It shipped at 0 and stayed there, so what was left was a
+switched-off feature with a knob on the title screen.
+
+**The keep-alive** (**K**, HOME on the remote, `'k'` in the sketch) and **the AFH
+channel plans** (`'a'`, the plan table, `set_afh_channel_map`). Both were
+hypotheses about the link, and the link's real answer was measured elsewhere: the
+bridge on a USB extension at the player's position, 1.5 stalls a second down to
+0.17. The AFH lever additionally cannot be judged anywhere but in a crowded hall.
+
+**`--log-gun` and `ir_view --trend`** (227 lines): the log writer and the A/B
+reader for the two ladders above. `--summary` and the live view stay — those read
+the *hardware*, not an experiment.
+
+**The beacon corner targets** (`--align`, TAB, `draw_beacon_marks`). They were
+how the rig got taped up, and the rig is taped up: `[gun] beacon_*` is measured
+and in the file, `tools/ir_view.py --bezel` recomputes it if the LEDs move, and
+the game prints the picture's exact rectangle at startup for the `"picture"`
+wiring. The keymap is four rows shorter for it.
+
+**The ASCII frontend** (`frontends/terminal.py`, `input/keyboard.py`, the whole
+second half of `main.py`, and `blessed` out of `requirements.txt`). It was the
+first prototype and it had been kept as proof that `core` does not depend on
+pygame — which `World.update(dt, x, y, fire)` already is. Its rounds could never
+reach the board by the sights rule, so most of what it cost was paragraphs
+explaining that.
+
+**The console board** (`leaderboard/display.py`, 440 lines). Two boards over one
+set of rows is two things to keep in step every time a column moves. The browser
+one is the better-looking, and the tty it was for — a Pi with no desktop — is the
+same box M6 is still waiting on.
+
+**Also gone:** `--pygame` (there is one frontend), `--practice` (`--mode practice`
+says it), `--no-calibration`, `--token` on all four sides, `seed --demo`,
+`[scene] fit` and `scale` (one fit: the screen's height), the `DUCKHUNT_SETTINGS`
+and `DUCKHUNT_LEADERBOARD` environment variables, the firmware's `'x'`/`'y'` axis
+flips (the flags are `const` now), `tools/wiimote_monitor.py` (`ir_view` does
+more), and `scores.json` / `player.json` out of the project root — the six real
+rounds in the first are on the board.
+
+**Kept, against the list:** `tools/import_nes_sounds.py`. It was down as the
+rollback path for `shot.wav`, which it is — but it is also what produced the
+`quack.wav` and `dog_laugh.wav` the game plays today, and deleting the only
+generator of two shipped assets is not a clear-out.
+
+About 1400 lines. The 102 tests still pass, and what they needed to know about
+any of this was three lines: a `--practice` that is now `--mode practice`, a
+`token` field on a stub, and one docstring that named the lead. Nothing in
+`tests/` was covering the removed code itself, which is its own small argument.

@@ -24,7 +24,6 @@ class Board:
     enabled: bool = True
     client_id: str = "test"
     timeout: float = 2.0
-    token: str = ""
 
 
 @pytest.fixture()

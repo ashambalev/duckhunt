@@ -5,16 +5,16 @@
 <link rel="icon" href="data:,">
 <!--
   The scoreboard as a television set, for the second screen: open it, press F,
-  leave it there. Same server and same API as the terminal board
-  (leaderboard/display.py) — this one can do what a terminal cannot: a 4:3 tube
-  in a plastic cabinet, phosphor glow, scanlines, and the slow bright band
-  rolling down the picture that you get when a camera films a CRT.
+  leave it there. A 4:3 tube in a plastic cabinet, phosphor glow, scanlines, and
+  the slow bright band rolling down the picture that you get when a camera films
+  a CRT. Served at / by leaderboard/server.py, which reads it off disk on every
+  request — so tuning how it looks is a reload, not a restart.
 
     http://localhost:8420/?color=amber&top=12&cabinet=wood
 
   Query parameters: color=green|amber|white, cabinet=beige|graphite|wood,
   ducks, top, refresh (seconds), speed (ticker characters per second),
-  plain=1 (no cabinet, no CRT effects), key= (with the server's --token).
+  plain=1 (no cabinet, no CRT effects).
   Keys: F fullscreen · C colour · B cabinet · E effects on/off.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -155,9 +155,11 @@
   }
   .row .rank { width: 3ch; margin-right: 0.8ch; text-align: right; color: var(--fg-dim); }
   /* stored long, shown short: a name may be 50 characters, a row has room for
-     about 20 of them before the score has nowhere to go */
+     about 30 of them before the score has nowhere to go — the ten it gained are
+     the ones the accuracy and the date gave up, the same trade the console board
+     makes in NAME_W */
   .row .name {
-    letter-spacing: 0.08em; max-width: 20ch;
+    letter-spacing: 0.08em; max-width: 30ch;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .row .dots {
@@ -166,18 +168,16 @@
     opacity: 0.35; transform: translateY(-0.35em);
   }
   /* The score is the bright column, because it is the one the rows are ordered
-     by; the ducks moved in beside the accuracy when a duck stopped being the
-     score. Four characters, the width the console board sets it in too: a round
-     that went badly is negative, and the minus sign gets a column of its own
-     rather than pushing the digits out of line. */
+     by; the ducks sit beside it since a duck stopped being the score. Four
+     characters, the width the console board sets it in too: a round that went
+     badly is negative, and the minus sign gets a column of its own rather than
+     pushing the digits out of line. No accuracy and no date: the percentage is
+     already inside the score, and a board of everyone's best round is not a
+     diary — the columns went to the name instead. */
   .row .score { width: 4ch; text-align: right; }
   .row .hits { width: 4ch; text-align: right; }
-  .row .unit, .row .hits, .row .acc, .row .tries, .row .when {
-    color: var(--fg-dim);
-  }
-  .row .acc { width: 5ch; text-align: right; }
+  .row .unit, .row .hits, .row .tries { color: var(--fg-dim); }
   .row .tries { width: 9ch; text-align: right; }
-  .row .when { width: 7ch; text-align: right; }
   .row.top { color: var(--fg); }
   .row:not(.top) { color: var(--fg-dim); }
   .row.flash { animation: flash 0.45s steps(1) 8; }
@@ -194,6 +194,10 @@
     padding-bottom: calc(var(--H) * 0.035);
     overflow: hidden; white-space: pre;
   }
+  #ticker-lead, #cursor { flex: none; }
+  /* the window the line slides behind; min-width lets a flex item actually clip */
+  #ticker-win { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+  #ticker-text { display: inline-block; white-space: pre; will-change: transform; }
   #cursor { animation: blink 1.1s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
   #probe {
@@ -329,7 +333,9 @@
         <h1 id="title">DUCK HUNT</h1>
         <div id="panel-name"></div>
         <div id="rows"></div>
-        <div id="ticker"><span id="ticker-text"></span><span id="cursor">█</span></div>
+        <div id="ticker"><span id="ticker-lead">◀ </span
+          ><span id="ticker-win"><span id="ticker-text"></span></span
+          ><span id="cursor">█</span></div>
         <span id="probe">0000000000000000000000000000000000000000</span>
         <div id="rowprobe" class="row"></div>
       </div>
@@ -363,10 +369,9 @@
     ducks: num("ducks", 100),
     top: num("top", 10),
     refresh: Math.max(0.5, num("refresh", 2)) * 1000,
-    speed: num("speed", 9),
+    speed: num("speed", 7),
     color: COLORS.includes(q.get("color")) ? q.get("color") : "green",
     cabinet: CABINETS.includes(q.get("cabinet")) ? q.get("cabinet") : "beige",
-    key: q.get("key") || "",
   };
   document.documentElement.dataset.color = cfg.color;
   document.documentElement.dataset.cabinet = cfg.cabinet;
@@ -390,7 +395,6 @@
     rowProbe: document.getElementById("rowprobe"),
   };
 
-  const api = p => p + (cfg.key ? `&key=${encodeURIComponent(cfg.key)}` : "");
 
   async function fetchJSON(path) {
     const r = await fetch(path, { cache: "no-store" });
@@ -401,8 +405,8 @@
   async function poll() {
     try {
       const [board, s] = await Promise.all([
-        fetchJSON(api(`/api/board?ducks=${cfg.ducks}&limit=${cfg.top}`)),
-        fetchJSON(api(`/api/stats?ducks=${cfg.ducks}`)),
+        fetchJSON(`/api/board?ducks=${cfg.ducks}&limit=${cfg.top}`),
+        fetchJSON(`/api/stats?ducks=${cfg.ducks}`),
       ]);
       rows = board.rows || [];
       stats = s;
@@ -498,9 +502,7 @@
       `<span class="dots"></span>` +
       `<span class="score">${r.score}</span><span class="unit"> PTS</span>` +
       `<span class="hits">${r.hits}</span><span class="unit"> DUCKS</span>` +
-      `<span class="acc">${Math.round(r.accuracy)}%</span>` +
-      `<span class="tries">${tries}</span>` +
-      `<span class="when">${r.finished_at.slice(5, 10)}</span>`;
+      `<span class="tries">${tries}</span>`;
   }
 
   // The list is set in whatever type size makes all of it fit between the
@@ -528,25 +530,38 @@
     el.rows.style.fontSize = `${Math.max(8, Math.min(max, byHeight, byWidth))}px`;
   }
 
-  // How many characters fit on the running line: measured off a hidden probe in
-  // the same font, so it is right at any size of tube and after any resize.
-  let room = 40;
+  // The width of one character, measured off a hidden probe in the same font, so
+  // it is right at any size of tube and after any resize.
+  let charW = 10;
   function measure() {
     const cw = el.probe.getBoundingClientRect().width / el.probe.textContent.length;
-    if (cw > 0) room = Math.max(10, Math.floor(el.tickerBox.clientWidth / cw) - 2);
+    if (cw > 0) charW = cw;
   }
   addEventListener("resize", () => { measure(); fitRows(); });
 
   // The ticker scrolls on its own clock — every frame — while the API is polled
   // every couple of seconds. A slow server slows nothing down on screen.
-  let last = performance.now(), offset = 0, since = 0;
+  //
+  // It moves in pixels, not in characters. Re-slicing the string every frame put
+  // the line a whole column further left seven times a second, and a line that
+  // jumps rather than glides is a line nobody can read; one transform of a
+  // fraction of a character is what a browser can do and a terminal cannot.
+  let last = performance.now(), offset = 0, since = 0, shown = "", shownReps = 0;
   function frame(now) {
     const dt = (now - last) / 1000; last = now;
     if ((since += dt) > 1) { measure(); since = 0; }
     const text = tickerText();
+    // enough copies that the tail of one is always followed by the head of the
+    // next, however wide the tube; rewritten only when the words change, never
+    // per frame — the transform does the moving
+    const reps = Math.max(3, Math.ceil(
+      el.tickerBox.clientWidth / Math.max(1, charW * text.length)) + 1);
+    if (text !== shown || reps !== shownReps) {
+      el.ticker.textContent = text.repeat(reps);
+      shown = text; shownReps = reps;
+    }
     offset = (offset + cfg.speed * dt) % Math.max(1, text.length);
-    el.ticker.textContent =
-      "◀ " + (text + text + text).slice(Math.floor(offset), Math.floor(offset) + room);
+    el.ticker.style.transform = `translateX(${-offset * charW}px)`;
     requestAnimationFrame(frame);
   }
 

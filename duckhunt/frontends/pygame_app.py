@@ -8,20 +8,18 @@ change.
 
 Running it:
     pip install pygame
-    python3 main.py --pygame                      # aim with the mouse (for development)
-    python3 main.py --pygame --serial /dev/tty.usbserial-XXXX   # light gun
+    python3 main.py                                    # aim with the mouse
+    python3 main.py --serial /dev/tty.usbserial-0001   # light gun
 """
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import random
 import sys
 import time
 import tomllib
-from collections import deque
 
 from ..core import calibration as calib_core
 from ..core import modes as modes_core
@@ -196,10 +194,7 @@ KEYMAP = [
     ("Q", "quit Duck Hunt"),
     ("C · A in a round", "show / hide the crosshair"),
     ("B", "next background"),
-    ("TAB", "corner targets for the IR beacons"),
     ("G", "the gun's report rate and dropouts"),
-    ("L", "how far ahead the crosshair is drawn"),
-    ("HOME (remote) · K", "the bridge's link keep-alive"),
     ("F1", "sight the gun in on five targets"),
     ("F2", "use that calibration on / off"),
 ]
@@ -216,15 +211,14 @@ SCALE = 5          # one sprite pixel = SCALE screen pixels
 MARK_LIFE = 1.4    # seconds a shot's hole stays on screen before it fades out
 RING_LIFE = 0.22   # ... and how long the ring that snaps out to the hit zone lives
 MARKS_MAX = 24     # keep the last few; a fast round can put out a lot of lead
+HUD_X = 16         # the left margin the HUD line and the shell belt share
+# One shell on the belt is this many shots, and a shot takes a quarter off the
+# leading one — four, so the default magazine of 40 is ten shells exactly. It is
+# a picture of the magazine and not a scale of it: change [round] ammo and the
+# belt grows or shrinks, it never puts more shots inside a shell to keep its own
+# length.
+SHELL_SHOTS = 4
 SUG_MAX = 4        # names offered under the name field; more is a table, not a hint
-# The values L steps through, in seconds. [gun] lead from settings.toml is added
-# to this ladder at startup if it is not already on it, so the file's own value
-# is always one of the stops and the game starts on it. Cycling live is the only
-# way to compare these honestly: the difference is a feel, feels do not survive
-# the minute it takes to restart the game and get the remote back, and the one
-# thing worse than an un-tuned knob is a knob tuned from memory.
-LEAD_STEPS = [0.0, 0.02, 0.035, 0.05]
-
 
 def aim_to_picture(gun, gx, gy, geom, clamp=True):
     """Gun coordinates -> a fraction of the picture the ducks fly in.
@@ -256,115 +250,6 @@ def aim_to_picture(gun, gx, gy, geom, clamp=True):
     if not clamp:
         return u, v
     return min(1.0, max(0.0, u)), min(1.0, max(0.0, v))
-
-
-class AimLead:
-    """Where the barrel is pointing NOW, from what the gun last said it was.
-
-    Every link in the chain costs time, and they add up to more than a frame:
-    the remote reports every ~10 ms, the radio adds its own (and much more when
-    it is being interfered with), the game drains the port once a frame, and the
-    frame it draws is shown at the next vsync — measured on this Mac,
-    `display.flip()` paces the loop at 59.8 fps with 16.67 ms between frames,
-    of which the drawing itself is under 1 ms. The rest is the wait. Call it
-    40-55 ms end to end in good health, and a barrel sweeping at 1.5 playfields
-    a second has moved 6-8 % of the screen in that time. That gap IS what "the
-    crosshair lags" means — nothing in the game is slow.
-
-    So the crosshair is not drawn where the gun said. It is drawn where the aim
-    is *going*: advanced along its own velocity by `[gun] lead`, plus however
-    stale the last report already is, and never by more than `[gun] lead_max`.
-
-    Three things this does differently from the frame-to-frame smoothing it
-    replaces, each of which was costing some of the compensation it was meant to
-    apply:
-
-    * **The velocity is fitted over a window** (least squares over the last
-      `WINDOW` seconds) instead of being smoothed one frame at a time. An
-      exponential average at a = 0.35 lags the truth by ~1.9 frames — 31 ms of
-      the 40 it was supposed to be cancelling.
-    * **A sample is a REPORT, not a frame.** It goes in with the time the report
-      arrived, and a report that never came is not a sample at all. Feeding the
-      last known position again every frame is feeding in zero velocity: the old
-      code coasted to a stop during exactly the stalls it should have been
-      coasting THROUGH, which is when the compensation is worth most.
-    * **Both the step and the velocity are capped**, so a beacon dropping out —
-      which can move the reported aim a quarter of the screen in one report —
-      cannot fling the crosshair into a corner. Past the cap the crosshair
-      simply holds, a bounded distance ahead of the last thing the gun said.
-    """
-
-    WINDOW = 0.10       # seconds of reports the velocity is fitted over
-    MIN_FIT = 3         # ... and the fewest samples worth fitting (~10 arrive)
-    MAX_STEP = 0.08     # never advance the crosshair further than this, playfields
-    MAX_VEL = 4.0       # playfields a second; a fast human sweep is 1.5-2
-    FADE = 0.20         # seconds to give the guess back over, once it is stale
-
-    def __init__(self, lead: float, lead_max: float) -> None:
-        self.lead = max(0.0, lead)
-        self.lead_max = max(self.lead, lead_max)
-        self._s = deque()          # (t, x, y) of each report, newest last
-
-    def feed(self, t: float, x: float, y: float) -> None:
-        """Take one sample: where the gun said it was pointing, and WHEN.
-
-        A `t` that has not moved since the last call is the same report over
-        again — the link is stalled, or the beacons are out of view — and is
-        dropped, which is what leaves the velocity standing rather than
-        averaging it away.
-        """
-        if self._s and t <= self._s[-1][0]:
-            return
-        self._s.append((t, x, y))
-        while len(self._s) > 2 and t - self._s[0][0] > self.WINDOW:
-            self._s.popleft()
-
-    def at(self, now: float) -> tuple[float, float] | None:
-        """Where to draw the crosshair, or None before the first sample."""
-        if not self._s:
-            return None
-        t_last, x, y = self._s[-1]
-        if self.lead <= 0:
-            return x, y
-        stale = max(0.0, now - t_last)
-        ahead = min(self.lead_max, self.lead + stale)
-        # Past the cap the guess is no longer a guess about anything: the link
-        # has dropped, or the beacons are out of view, and nothing says the
-        # barrel is still going the way it was. Hand the crosshair back to the
-        # last thing the gun actually said, over FADE seconds rather than in one
-        # frame — a crosshair parked 8 % of the screen off the barrel is a lie,
-        # and a crosshair that jumps there is a worse one.
-        fade = 1.0
-        if stale > self.lead_max:
-            fade = max(0.0, 1.0 - (stale - self.lead_max) / self.FADE)
-        if fade <= 0.0:
-            return x, y
-        vx, vy = self._velocity()
-        dx = min(self.MAX_STEP, max(-self.MAX_STEP, ahead * vx)) * fade
-        dy = min(self.MAX_STEP, max(-self.MAX_STEP, ahead * vy)) * fade
-        return (min(1.0, max(0.0, x + dx)), min(1.0, max(0.0, y + dy)))
-
-    def _velocity(self) -> tuple[float, float]:
-        """Playfields a second, as the slope of a straight line through the
-        window — the estimate with the least delay of its own that still ignores
-        a single noisy report."""
-        s = self._s
-        n = len(s)
-        if n < self.MIN_FIT:
-            return 0.0, 0.0
-        t0 = s[0][0]
-        ts = [p[0] - t0 for p in s]
-        mt = sum(ts) / n
-        den = sum((t - mt) ** 2 for t in ts)
-        if den <= 0:
-            return 0.0, 0.0
-        out = []
-        for i in (1, 2):
-            vals = [p[i] for p in s]
-            mv = sum(vals) / n
-            v = sum((t - mt) * (val - mv) for t, val in zip(ts, vals)) / den
-            out.append(min(self.MAX_VEL, max(-self.MAX_VEL, v)))
-        return out[0], out[1]
 
 
 def _open_fullscreen(pygame, want_display, desktops):
@@ -590,8 +475,7 @@ def _pick_background(backgrounds, wanted):
 
 
 class PygameFrontend:
-    def __init__(self, settings=None, align=False, log_gun=False,
-                 calibrate=False, use_calibration=True, player_name="",
+    def __init__(self, settings=None, calibrate=False, player_name="",
                  source_name=None, modes=None, mode=0):
         # The rounds the title screen cycles between, and which of them this
         # session opens on. A mode may only change the round and never the rig
@@ -625,16 +509,6 @@ class PygameFrontend:
         self.source_name = source_name
         # --calibrate: straight into the sighting-in screen, before the title
         self.calibrate = calibrate
-        # --no-calibration: play on the gun's own numbers, calibration.json or
-        # not. The knob exists so the correction can be judged by turning it off
-        # in the middle of a round (F2) rather than from memory.
-        self.use_calibration = use_calibration
-        # --align: start with the beacon corner targets showing (TAB toggles)
-        self.align = align
-        # --log-gun: one line a second about the gun's stream, for reading the
-        # trend back afterwards (ir_view cannot run at the same time as the game,
-        # the serial port takes one reader)
-        self.log_gun = log_gun
 
     def run(self, source=None) -> None:
         import pygame
@@ -690,47 +564,34 @@ class PygameFrontend:
                   f"connected — letting SDL choose")
             want_display = -1
         bw, bh = backgrounds[bg_index]["image"].get_size() if backgrounds else (300, 225)
-        # [scene] scale asks for a picture smaller than fits — the light gun's
-        # distance knob (a smaller beacon rectangle can be seen from closer up),
-        # and nothing else changes because every size in the game is a fraction
-        # of the picture. 0 = as big as fits.
-        wanted = self.world.settings.scene.scale
-        fit = self.world.settings.scene.fit
         if self.world.settings.scene.fullscreen:
             display = _open_fullscreen(pygame, want_display, desktops)
             sw, sh = display.get_size()
-            fits = max(1, min(sw // bw, sh // bh))
-            if fit == "height" and wanted <= 0:
-                # fill the screen's height, keep the aspect: the art pixels no
-                # longer land on a whole number of display pixels, so some come
-                # out a pixel bigger than their neighbours. transform.scale is
-                # nearest-neighbour, so nothing smears — and the ducks are half
-                # again as big as the letterboxed fit makes them.
-                H, W = sh, int(round(bw * sh / bh))
-                if W > sw:                      # a screen narrower than the art
-                    W, H = sw, int(round(bh * sw / bw))
-                k = max(1, round(H / bh))
-            else:
-                k = min(wanted, fits) if wanted > 0 else fits
-                W, H = bw * k, bh * k
+            # Fill the screen's height, keep the aspect: the art pixels no
+            # longer land on a whole number of display pixels, so some come out
+            # a pixel bigger than their neighbours. transform.scale is
+            # nearest-neighbour, so nothing smears — and the ducks are half
+            # again as big as a whole-number letterboxed fit makes them, which
+            # is the whole reason this is the only fit there is.
+            H, W = sh, int(round(bw * sh / bh))
+            if W > sw:                          # a screen narrower than the art
+                W, H = sw, int(round(bh * sw / bw))
+            k = max(1, round(H / bh))
             offset = ((sw - W) // 2, (sh - H) // 2)
             screen = pygame.Surface((W, H))
         else:
             dw, dh = desktops[max(0, want_display)]
             fits = max(1, min(dw // bw, (dh - 120) // bh))
-            k = min(wanted, fits) if wanted > 0 else max(2, min(4, fits))
+            k = max(2, min(4, fits))
             W, H = bw * k, bh * k
             display = (pygame.display.set_mode((W, H)) if want_display < 0
                        else pygame.display.set_mode((W, H), display=want_display))
             sw, sh = W, H
             offset = (0, 0)
             screen = display
-        if wanted > fits:
-            print(f"[scene] scale {wanted}x does not fit this display — using {k}x")
-        # Where the picture came out: the rectangle to tape the beacons to when
-        # [gun] frame = "picture", and the number to check after changing the
-        # display or its resolution (the pixel-art scale is a whole number, so the
-        # picture changes size in steps and the beacons have to follow).
+        # Where the picture came out: the rectangle the beacons are measured
+        # against when [gun] frame = "picture", and the number to check after
+        # changing the display or its resolution.
         print(f"display {want_display if want_display >= 0 else 'auto'} of "
               f"{len(desktops)} connected {desktops} — using {sw}x{sh}"
               f"{'' if self.world.settings.scene.fullscreen else ' (windowed)'}")
@@ -740,72 +601,6 @@ class PygameFrontend:
               f"{'' if H % bh == 0 else f', ~{H/bh:.2f}x'})")
         pygame.mouse.set_visible(False)      # the game draws its own crosshair
         pygame.display.set_caption("🦆 Duck Hunt")
-
-        def draw_beacon_marks(surf, w, h, lines, inks, ink=(230, 40, 40), small=False):
-            """Corner targets to tape the four IR beacons to (TAB toggles them).
-
-            Brackets in the four corners of `surf` — so the caller decides which
-            rectangle is being marked, because that is exactly what differs
-            between the two ways of mounting the beacons: the picture's corners
-            ([gun] frame = "picture", drawn into the picture surface) or the
-            physical screen's ("display", drawn into the display, with the
-            letterbox bars lit up so the screen's own edge is visible against the
-            bezel). Red on white, because a mark has to read against sky, grass
-            and a lit bar alike.
-            """
-            arm = max(24, w // (20 if small else 10))
-            t = max(2, k) if small else max(4, 2 * k)   # thick enough to aim at
-            for ax, ay in ((0, 0), (1, 0), (1, 1), (0, 1)):
-                x0 = 0 if ax == 0 else w - arm    # the horizontal arm
-                y0 = 0 if ay == 0 else h - t
-                x1 = 0 if ax == 0 else w - t      # the vertical arm
-                y1 = 0 if ay == 0 else h - arm
-                for ink_, inset in (((255, 255, 255), 0), (ink, t // 4)):
-                    d = inset
-                    pygame.draw.rect(surf, ink_, (x0 + (d if ax == 0 else 0),
-                                                  y0 + (d if ay == 0 else 0),
-                                                  arm - d, t - d))
-                    pygame.draw.rect(surf, ink_, (x1 + (d if ax == 0 else 0),
-                                                  y1 + (d if ay == 0 else 0),
-                                                  t - d, arm - d))
-            y = h // 2 - 52
-            for line, ink in zip(lines, inks):
-                img = font.render(line, True, ink)
-                if img.get_width() > w - 40:      # a small picture, a long line
-                    img = pygame.transform.smoothscale(
-                        img, ((w - 40), img.get_height() * (w - 40) // img.get_width()))
-                shade = pygame.Surface((img.get_width() + 12, img.get_height() + 4),
-                                       pygame.SRCALPHA)
-                shade.fill((0, 0, 0, 150))
-                surf.blit(shade, (w // 2 - shade.get_width() // 2, y - 2))
-                surf.blit(img, (w // 2 - img.get_width() // 2, y))
-                y += img.get_height() + 6
-
-        def picture_marks():
-            """The playfield's own corners — where beacons go with frame = "picture"."""
-            draw_beacon_marks(screen, W, H, [
-                "BEACONS GO IN THESE FOUR CORNERS",
-                f"picture {W}x{H} at {offset[0]},{offset[1]} of {sw}x{sh}, scale {k}x",
-                '[gun] frame = "picture" — right for these corners',
-                "TAB hides this",
-            ], [(255, 255, 255), (255, 255, 255), (140, 255, 140), (190, 190, 190)])
-
-        def display_marks():
-            """The screen's own corners, for beacons on the bezel.
-
-            The bars are lit for this, so the display's edge is the line where the
-            light stops — that is what a bundle on the bezel lines up with, and
-            there is no other way to see it while the game is on.
-            """
-            draw_beacon_marks(display, sw, sh, [
-                "RED: BEACONS GO ON THE BEZEL, LEVEL WITH THESE CORNERS",
-                "line each bundle up with the corner where the light stops",
-                "BLUE: aim there to check — the crosshair should sit in the angle",
-                f'[gun] frame = "display", beacon rectangle {gun.beacon_w:g} x '
-                f"{gun.beacon_h:g} of the screen",
-                "TAB hides this",
-            ], [(255, 255, 255), (255, 255, 255), (130, 210, 255),
-                (140, 255, 140), (190, 190, 190)])
 
         # The crosshair IS the hit zone: [gun] spread is the shot's radius in
         # fractions of the playfield width, and the circle is drawn at exactly
@@ -849,6 +644,86 @@ class PygameFrontend:
                                        (pad, pad), hole, max(1, k // 2))
                     screen.blit(shade, (cx - pad, cy - pad))
 
+        def draw_belt():
+            """What is left in the magazine, as shells on a belt, not as a count.
+
+            One shell is `SHELL_SHOTS` shots and every shot takes a quarter off
+            the top of the leading one, so the default `[round] ammo = 40` is
+            exactly ten shells — a row you read the way you read a fuel gauge,
+            without reading a number at all. A magazine that is not a whole
+            number of shells (ammo = 10, say) starts with its last shell part
+            full, which is the honest picture of two and a half shells rather
+            than a belt that quietly rounds the magazine up.
+
+            It sits in the strip below `[duck] sky` — the part of the picture the
+            ducks are kept out of — so it can never cover the thing being aimed
+            at, and it is drawn before the crosshair so the crosshair is never
+            covered either. The dog trots through it: he goes on first and the
+            shells over him, because half a second of dog should not be able to
+            take the gauge away.
+
+            Rounds that do not count shots (practice) have no belt at all. A
+            magazine that cannot run out is not a thing to watch.
+            """
+            cap = settings.round.ammo
+            if cap <= 0:
+                return
+            left = max(0, self.world.ammo)
+            shells = -(-cap // SHELL_SHOTS)     # ceil: a part-full last shell shows
+
+            floor_y = H - max(6, int(H * 0.02))
+            # nothing flies below this, so this is where the belt may start
+            sky_y = int(H * settings.duck.sky)
+            tall = max(int(H * 0.045), min(int(H * 0.075), floor_y - sky_y))
+            wide = max(3, int(W * 0.016))
+            gap = max(2, wide // 2)
+            # A deep magazine makes the shells thinner rather than fewer: a
+            # quarter is one shot wherever the belt is, and a belt that put two
+            # shots in a quarter to keep its own proportions would be a gauge
+            # that lies about the only thing it is for. Past about twenty shells
+            # they are too thin to carry an outline or the quarter lines and the
+            # belt becomes a row of red hairlines — still a gauge, just no longer
+            # a picture of ammunition. That is a magazine three times the size of
+            # any this game ships, and the alternative is drawing 200 shots as
+            # something other than 200 shots.
+            room = int(W * 0.40)
+            if shells * (wide + gap) > room:
+                span = max(3, room // shells)
+                wide, gap = max(2, span * 2 // 3), max(1, span - span * 2 // 3)
+            detail = wide >= 5           # room inside the shell for its own lines
+
+            brass_h = max(2, int(tall * 0.28))
+            body_h = tall - brass_h
+            top = floor_y - tall
+            for i in range(shells):
+                x = HUD_X + i * (wide + gap)
+                quarters = min(SHELL_SHOTS, max(0, left - i * SHELL_SHOTS))
+                # the hull first, dark, so a spent loop is still a loop on the
+                # belt — how much has gone is half of what a bandolier tells you
+                pygame.draw.rect(screen, (46, 40, 38), (x, top, wide, body_h))
+                pygame.draw.rect(screen, (196, 156, 68),
+                                 (x, top + body_h, wide, brass_h))
+                pygame.draw.line(screen, (138, 104, 40),
+                                 (x, top + body_h + brass_h // 2),
+                                 (x + wide - 1, top + body_h + brass_h // 2))
+                if quarters:
+                    # the load empties from the top, so what is left is the
+                    # BOTTOM quarters — the shell shortens the way a shell does
+                    fill = int(round(body_h * quarters / SHELL_SHOTS))
+                    y = top + body_h - fill
+                    pygame.draw.rect(screen, (198, 46, 38), (x, y, wide, fill))
+                    pygame.draw.line(screen, (240, 96, 84),
+                                     (x, y), (x + wide - 1, y))
+                    # the quarters themselves, so the belt can be counted and not
+                    # only glanced at
+                    if detail:
+                        for q in range(1, quarters):
+                            qy = top + body_h - int(round(body_h * q / SHELL_SHOTS))
+                            pygame.draw.line(screen, (126, 28, 22),
+                                             (x + 1, qy), (x + wide - 2, qy))
+                if detail:
+                    pygame.draw.rect(screen, (24, 20, 18), (x, top, wide, tall), 1)
+
         def draw_crosshair():
             # Hidden is a real way to play a light gun: you aim down the barrel,
             # and the only feedback is the duck falling. A on the remote toggles
@@ -863,92 +738,18 @@ class PygameFrontend:
             pygame.draw.line(screen, (255, 60, 60), (cx - arm, cy), (cx + arm, cy), 2)
             pygame.draw.line(screen, (255, 60, 60), (cx, cy - arm), (cx, cy + arm), 2)
 
-        def log_gun_line():
-            """One line a second about the gun's stream, while --log-gun is on.
-
-            Hung off present(), which every mode calls, rather than off the
-            gameplay branch: the bridge's status lines — including the remote's
-            battery level, which it sends on connect — arrive while the title
-            screen is still up waiting for the trigger.
-            """
-            if gun_log is None:
-                return
-            now = time.monotonic() - t_start
-            if now - t_logged[0] < 1.0:
-                return
-            t_logged[0] = now
-            snap = getattr(source, "stats", None)
-            snap = snap.snapshot() if snap is not None else None
-            if snap is not None:
-                snap["t"] = round(now, 2)
-                snap["fps"] = round(clock.get_fps(), 1)
-                snap["lead"] = aim_lead.lead      # which setting this second was
-                                                  # played on — L changes it live
-                snap["ducks"] = len(self.world.ducks)
-                # hits as well as shots, because the one question the lead
-                # setting actually has to answer is whether ducks fall — and
-                # with both here, a stretch played at one lead can be scored
-                # against a stretch played at another instead of remembered.
-                snap["hits"] = self.world.hits
-                # shots in this second: the firmware kicks the remote's rumble
-                # motor for 90 ms on every trigger pull, and that motor comes out
-                # of the same AA cells as the radio — so if the stream sags
-                # exactly where the shots are, that is the answer, and the log
-                # has to carry both to show it
-                snap["keepalive"] = 1 if keepalive[0] else 0
-                snap["shots"] = max(0, self.world.shots - shots_logged[0])
-                shots_logged[0] = self.world.shots
-                gun_log.write(json.dumps(snap) + "\n")
-            # whatever the bridge said since the last line: a re-pairing in the
-            # middle of a round explains a hole that no rate number can
-            said = getattr(source, "statuses", None)
-            if said:
-                for line in said:
-                    gun_log.write(json.dumps(
-                        {"t": round(now, 2), "status": line}) + "\n")
-                said.clear()
-
         def present():
             """Show the frame: centred in fullscreen, as-is in a window.
 
-            The beacon marks go on here rather than in the gameplay branch, so
-            they are up on the intro and the result screen too — taping beacons
-            should not have to wait for the dog to finish sniffing.
             """
-            if show_marks[0]:
-                if gun_is_picture:
-                    picture_marks()
-                else:
-                    # the playfield's corners: not where the beacons go in this
-                    # wiring, but where to aim to see whether [gun] is right
-                    draw_beacon_marks(screen, W, H, [], [],
-                                      ink=(70, 150, 255), small=True)
             if screen is not display:
-                # the bars go pale grey while the bezel marks are up: a lit
-                # display shows where its own glass ends, black does not
-                display.fill((170, 170, 178) if show_marks[0] and not gun_is_picture
-                             else (0, 0, 0))
+                display.fill((0, 0, 0))
                 display.blit(screen, offset)
-            if show_marks[0] and not gun_is_picture:
-                display_marks()
-            log_gun_line()
             pygame.display.flip()
 
         # the geometry aim_to_picture needs: display size, picture size, where
         # the picture sits in the display
         geom = (sw, sh, W, H, offset[0], offset[1])
-
-        gun_log = None
-        if self.log_gun and source is not None:
-            log_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
-            os.makedirs(log_dir, exist_ok=True)
-            gun_log_path = os.path.normpath(os.path.join(
-                log_dir, time.strftime("gun_%Y%m%d_%H%M%S.jsonl")))
-            gun_log = open(gun_log_path, "w", buffering=1)
-            print(f"Logging the gun stream to {gun_log_path}")
-        t_start = time.monotonic()
-        t_logged = [0.0]           # a list: present() writes to it from a closure
-        shots_logged = [0]
 
         clock = pygame.time.Clock()
         font = pygame.font.SysFont("Menlo,monospace", 22, bold=True)
@@ -1410,22 +1211,21 @@ class PygameFrontend:
             sug_frozen = True
 
         gun = settings.gun
-        gun_is_picture = gun.frame == "picture"
         # The sights are not the camera: they sit above and behind it, the
         # barrel is not exactly parallel to the lens, and the beacon rectangle
         # in settings.toml is a tape measure's opinion. What that adds up to is
         # measured by the calibrator (F1) and kept in calibration.json — see
         # core/calibration.py. Applied after the beacon rectangle is taken out
-        # and before the crosshair is thrown ahead, so the lead works on
-        # corrected numbers and a duck falls where the front sight was.
-        calib = [calib_core.load() if self.use_calibration else calib_core.Calibration()]
+        # before the crosshair is drawn, so a duck falls where the front
+        # sight was.
+        calib = [calib_core.load()]
         use_calib = [calib[0].active]
         if calib[0].active:
             print(f"calibration.json — {calib[0].describe()}")
             warn = calib[0].mismatch((W, H), (sw, sh), gun)
             if warn:
                 print(f"calibration.json: {warn}")
-        elif self.use_calibration:
+        else:
             print("no sight calibration yet — F1 on the title screen sights the "
                   "gun in on five targets")
 
@@ -1434,8 +1234,8 @@ class PygameFrontend:
             mouse_down = [False]
 
             def poll_raw():
-                """One frame of RAW aim for the calibrator: no correction, no
-                lead, unclamped — the numbers it is there to measure."""
+                """One frame of RAW aim for the calibrator: no correction and
+                unclamped — the numbers it is there to measure."""
                 if source is None:
                     mx, my = pygame.mouse.get_pos()
                     md = pygame.mouse.get_pressed()[0]
@@ -1462,7 +1262,6 @@ class PygameFrontend:
             pygame.mouse.set_visible(False)
             clock.tick(FPS)       # swallow the time spent in there, or the first
                                   # frame back would advance the world by minutes
-        show_marks = [self.align]          # --align starts the corner targets up
         show_gun = [False]                 # G: the gun's report rate and dropouts
         # Whether the crosshair starts up is [gun] crosshair, because it decides
         # whether the round can be a record at all. "auto" asks what is in the
@@ -1473,7 +1272,6 @@ class PygameFrontend:
         # remote (or C) flips it from here either way.
         hide_cross = [gun.crosshair == "off"
                       or (gun.crosshair == "auto" and source is not None)]
-        keepalive = [False]                # K: the bridge's link keep-alive
         # the dog's pop-up reaction: kind in (None,'catch','laugh'), phase 0..1
         pop_kind = None
         pop_t = 0.0
@@ -1481,13 +1279,6 @@ class PygameFrontend:
         last_escaped = 0
         crosshair = [0.5, 0.5]
         marks = []                 # where the shots went: {x, y, t, hit}
-        # The crosshair is drawn ahead of the reported aim, by [gun] lead plus
-        # whatever the last report is already stale by — see AimLead.
-        aim_lead = AimLead(gun.lead, gun.lead_max)
-        # ... and L steps through the ladder live, starting from whatever
-        # settings.toml asked for.
-        lead_steps = sorted(set(LEAD_STEPS + [round(gun.lead, 4)]))
-        lead_at = [lead_steps.index(round(gun.lead, 4))]
         prev_mouse_down = False
 
         def next_mode(step=1):
@@ -1558,8 +1349,6 @@ class PygameFrontend:
                         # changed their mind — the round is not recorded anywhere
                         mode, t_mode = "over", 0.0
                     elif e.key in (pygame.K_TAB, pygame.K_DOWN):
-                        # TAB is the beacon targets everywhere else; here the
-                        # name screen owns it, and nothing falls through
                         take_suggestion(1)
                     elif e.key == pygame.K_UP:
                         take_suggestion(-1)
@@ -1587,37 +1376,10 @@ class PygameFrontend:
                     end_round()
                 elif e.key in (pygame.K_ESCAPE, pygame.K_q):
                     running = False
-                elif e.key == pygame.K_k:
-                    # the bridge's keep-alive: an output report every 250 ms, no
-                    # motor. Recoil is gone, but the A/B run that cleared it left
-                    # the question of whether a link that is being talked to
-                    # stays faster — this is how to answer it inside one round.
-                    cmd = getattr(source, "command", None)
-                    if cmd is not None:
-                        keepalive[0] = not keepalive[0]
-                        cmd("k")
                 elif e.key == pygame.K_c:
                     hide_cross[0] = not hide_cross[0]
                 elif e.key == pygame.K_g:
                     show_gun[0] = not show_gun[0]
-                elif e.key == pygame.K_l:
-                    # Step the lead, and put the gun's numbers up while doing it:
-                    # the value being tried has to be on screen, or a round of
-                    # A/B comes back as "the third one, I think".
-                    lead_at[0] = (lead_at[0] + 1) % len(lead_steps)
-                    aim_lead.lead = lead_steps[lead_at[0]]
-                    # lead_max moves WITH it rather than staying at whatever the
-                    # file said. Leaving it high was what made the first A/B
-                    # lie: at a ladder step of 20 ms the ceiling was still 60,
-                    # so every stall in the link — 1.5 a second, measured —
-                    # briefly tripled the lead, and the only step that felt
-                    # clean was 0, which turns extrapolation off altogether.
-                    # Stepping the pair together tests settings that could
-                    # actually be shipped.
-                    aim_lead.lead_max = aim_lead.lead
-                    show_gun[0] = True
-                    print(f"[gun] lead = {aim_lead.lead:g} s "
-                          f"({1000 * aim_lead.lead:.0f} ms ahead)")
                 elif e.key == pygame.K_F1 and mode in ("intro", "over"):
                     # From the title screen or the result screen only: sighting in
                     # is a thing you do between rounds, and stepping out of a
@@ -1632,8 +1394,6 @@ class PygameFrontend:
                         print(f"sight calibration "
                               f"{'ON' if use_calib[0] else 'off'} "
                               f"({calib[0].describe()})")
-                elif e.key == pygame.K_TAB:
-                    show_marks[0] = not show_marks[0]
                 elif e.key == pygame.K_b and backgrounds:
                     bg_index = (bg_index + 1) % len(backgrounds)
                     bg, GRASS_Y = use_background(bg_index)
@@ -1655,21 +1415,8 @@ class PygameFrontend:
                 ax, ay = aim_to_picture(gun, st.x, st.y, geom, clamp=False)
                 if use_calib[0]:
                     ax, ay = calib[0].apply(ax, ay)
-                ax, ay = min(1.0, max(0.0, ax)), min(1.0, max(0.0, ay))
-                # [gun] lead: hide the link's delay by drawing the crosshair
-                # where the aim is going rather than where it was last heard
-                # from. The sample is stamped with the time the REPORT arrived,
-                # which is the whole trick — see AimLead. Sources that keep no
-                # such stamp (the keyboard) fall back to now, and a source that
-                # is not moving then feeds the same point every frame, out of
-                # which the fit gives a velocity of zero and nothing is
-                # extrapolated. The mouse does not come through here at all.
-                stats = getattr(source, "stats", None)
-                sample_t = stats.last_aim() if stats is not None else 0.0
-                aim_lead.feed(sample_t or time.monotonic(), ax, ay)
-                ahead = aim_lead.at(time.monotonic())
-                if ahead is not None:
-                    crosshair[0], crosshair[1] = ahead
+                crosshair[0] = min(1.0, max(0.0, ax))
+                crosshair[1] = min(1.0, max(0.0, ay))
                 fire = st.fire
                 if st.pressed & 0x02:              # A on the remote
                     if mode == "intro" and len(self.modes) > 1:
@@ -1690,14 +1437,6 @@ class PygameFrontend:
                         fire = False
                     else:
                         hide_cross[0] = not hide_cross[0]
-                if st.pressed & 0x04:              # HOME on the remote
-                    # the same toggle as the K key, but reachable from where you
-                    # actually stand: the laptop is by the screen and the player
-                    # is three metres away with both hands on the gun
-                    cmd = getattr(source, "command", None)
-                    if cmd is not None:
-                        keepalive[0] = not keepalive[0]
-                        cmd("k")
             else:
                 mx, my = pygame.mouse.get_pos()
                 crosshair[0] = min(1.0, max(0.0, (mx - offset[0]) / W))
@@ -1915,6 +1654,7 @@ class PygameFrontend:
             while marks and marks[0]["t"] > MARK_LIFE:
                 marks.pop(0)
             draw_marks()
+            draw_belt()
             draw_crosshair()
 
             # HUD: the score, hits, how much of the flock is out, what is left in
@@ -1924,7 +1664,7 @@ class PygameFrontend:
                 hud_text(w.score, w.hits, w.released, w.ammo, w.elapsed,
                          w.accuracy),
                 True, (255, 255, 255))
-            screen.blit(hud, (16, 12))
+            screen.blit(hud, (HUD_X, 12))
 
             # G: what the gun's stream actually looks like. "Laggy" has three
             # different causes that feel identical — a slow rate, reports
@@ -1945,17 +1685,13 @@ class PygameFrontend:
                     if snap["age"] is not None:
                         parts.append(f"age {1000*snap['age']:.0f}ms")
                     parts.append(f"fps {clock.get_fps():.0f}")
-                    parts.append(f"lead {1000 * aim_lead.lead:.0f}ms")
-                    parts.append(f"keepalive {'ON' if keepalive[0] else 'off'}")
                     parts.append(f"calib {'ON' if use_calib[0] else 'off'}")
                     text = " · ".join(parts)
                 img = font.render(text, True, (255, 240, 140))
-                screen.blit(img, (16, 12 + hud.get_height() + 6))
+                screen.blit(img, (HUD_X, 12 + hud.get_height() + 6))
 
             present()
 
-        if gun_log is not None:
-            gun_log.close()
         board.close()
         look.close()
         pygame.quit()

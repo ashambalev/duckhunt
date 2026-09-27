@@ -32,13 +32,6 @@ static uint16_t g_handle = 0;
 // the Arduino preprocessor writes its function prototypes above the sketch.
 struct Dot { float x, y; int size; };   // size: the blob's extent, 0..15
 
-// One entry of the AFH channel plan table, up here for the same reason. What it
-// is and why it is off by default is at AFH_PLANS, further down.
-struct afh_plan_t {
-  const char *name;
-  uint8_t     wifi[3];     // the Wi-Fi channels to keep off, 0 = no more
-  uint8_t     half;        // MHz either side of each centre
-};
 
 
 // ---- Getting the remote connected, without the hidden SYNC button -----------
@@ -200,17 +193,12 @@ static void reconnect_tick() {
 // better half (80-83/s) — so the motor was not the cause, but nobody wants it
 // back either, and one output report per shot is one less thing on the link.
 //
-// What that A/B did leave behind is a better question: the recoil sent two
-// output reports per shot, and the stream was fine while it did. Bluetooth
-// Classic links can drop into sniff mode when the host stops talking, which
-// costs exactly this kind of latency. So the keep-alive below sends the same
-// kind of packet on a timer — set_rumble(false), which runs no motor at all —
-// and 'k' turns it on, to see whether it is the traffic that keeps the link
-// awake. Off by default, because it is a hypothesis, not a fix.
-static const unsigned long KEEPALIVE_MS = 250;
-static bool KEEPALIVE_ON = false;
-static bool          g_prev_b = false;
-static unsigned long g_keepalive_last = 0;
+// The idea that replaced it — a keep-alive output report on a timer, to stop a
+// quiet link dropping into sniff mode — is gone too. The thing that actually
+// moved the numbers was measured and is not in software at all: the bridge on a
+// USB extension at the player's position instead of three metres away behind
+// the screen took the stalls from 1.5 a second to 0.17.
+static bool g_prev_b = false;
 
 // Step-by-step IR camera enabling: one command per IR_STEP_MS, so the remote has
 // time to acknowledge each register write (sent in one burst, they get lost).
@@ -268,8 +256,8 @@ static const float CAM_CX = 512.0f, CAM_CY = 384.0f;   // the barrel points here
 // hands. Four separate measurements agreed on these values and the crosshair
 // still felt wrong, so the argument is settled the short way — flip it, look at
 // the screen, and whatever you leave it on is printed and logged.
-static bool CAM_MIRROR_X = false;
-static bool CAM_MIRROR_Y = true;
+static const bool CAM_MIRROR_X = false;
+static const bool CAM_MIRROR_Y = true;
 
 // Where the beacon rectangle sits against the screen it surrounds — its centre
 // and its size, in fractions of that screen. LEAVE THESE AT 0.5/0.5/1.0/1.0: the
@@ -418,104 +406,11 @@ static bool computeAim(const uint8_t* ir, int& outX, int& outY) {
 // non-numeric lines anyway).
 static void status(const char* s) { Serial.print("# "); Serial.println(s); }
 
-// Printed at boot and again on every flip, so a log always names the axes it was
-// recorded under.
+// Printed at boot and on '?', so a log always names the axes it was recorded
+// under. The values themselves are settled — see the README.
 static void print_axes() {
   Serial.printf("# axes: MIRROR_X=%d MIRROR_Y=%d\n",
                 (int)CAM_MIRROR_X, (int)CAM_MIRROR_Y);
-}
-
-// ---- AFH: the channels the radio is told not to bother hopping onto --------
-// INERT UNTIL ASKED FOR. Nothing below runs at boot, on a connection, or on a
-// timer: the only way anything here reaches the radio is the 'a' command on the
-// serial port, and nothing types 'a' by itself — the game sends 'o' and 'k',
-// ir_view.py sends 'd', 's', 'x' and 'y'. Until somebody presses it, the
-// controller's own adaptive hopping runs exactly as it does today.
-//
-// What it is for. Adaptive frequency hopping already drops channels the
-// controller measures as bad, but it has to collide with them first and it
-// re-tests them afterwards, and each of those collisions is a retransmission —
-// which is the 20-100 ms hole in the report stream that feels like lag. Where
-// the interference is known in advance and parked in the same place all day —
-// a conference hall with access points on Wi-Fi channels 1, 6 and 11 — the host
-// can say so up front and those collisions never happen.
-//
-// What it is not. It only reaches the hop sequence while THIS side is the
-// piconet's master, i.e. when the bridge placed the call ("Remote connected
-// (the bridge called it)"). If the remote called us it is the master, it owns
-// the hop sequence, and this map goes no further than our own controller —
-// the line printed on applying says which case you are in. It also does not
-// make anything louder: the traffic simply moves into the channels left over,
-// so blocking too much makes things worse, not better. That is why the
-// narrowest plan that helps is the one to use, and why the radio itself
-// refuses a map with fewer than 20 channels left (HCI status 0x12).
-//
-// 2.4 GHz Wi-Fi channel N is centred on 2407 + 5N MHz and is 22 MHz wide;
-// bluetooth channel k is 2402 + k MHz, k = 0..78. `half` is how much of each
-// Wi-Fi channel to block, in MHz either side of its centre: 11 is the whole of
-// it, 8 is the part that carries nearly all the power, which is what makes
-// blocking all three of 1/6/11 fit inside the 20-channel floor at all.
-static const afh_plan_t AFH_PLANS[] = {
-  { "off, every channel back in play",  {0, 0, 0},   0 },
-  { "Wi-Fi 1",                          {1, 0, 0},  11 },
-  { "Wi-Fi 6",                          {6, 0, 0},  11 },
-  { "Wi-Fi 11",                         {11, 0, 0}, 11 },
-  { "Wi-Fi 1 + 6",                      {1, 6, 0},  11 },
-  { "Wi-Fi 6 + 11",                     {6, 11, 0}, 11 },
-  { "Wi-Fi 1 + 6 + 11, narrow",         {1, 6, 11},  8 },
-};
-static const uint8_t AFH_PLAN_COUNT = sizeof(AFH_PLANS) / sizeof(AFH_PLANS[0]);
-static const uint8_t AFH_MIN_CHANNELS = 20;   // the specification's own floor
-static uint8_t g_afh_plan = 0;     // which plan is selected; 0 = never touched
-static bool    g_afh_sent = false; // ... and whether anything was ever sent
-static bool    g_we_called = false;  // did the bridge place the call, or the remote
-
-// Fill in the 79-bit map: a set bit is a channel to keep using. Returns how
-// many are left in play.
-static uint8_t afh_build(const afh_plan_t &p, uint8_t map[10]) {
-  for (int i = 0; i < 10; i++) map[i] = 0xFF;
-  map[9] = 0x7F;                       // bit 79 does not exist and must be 0
-  for (int i = 0; i < 3; i++) {
-    if (p.wifi[i] == 0) continue;
-    int centre = 2407 + 5 * (int)p.wifi[i];
-    int lo = centre - (int)p.half - 2402;
-    int hi = centre + (int)p.half - 2402;
-    if (lo < 0)  lo = 0;
-    if (hi > 78) hi = 78;
-    for (int k = lo; k <= hi; k++) map[k >> 3] &= ~(1 << (k & 7));
-  }
-  uint8_t left = 0;
-  for (int k = 0; k <= 78; k++) if (map[k >> 3] & (1 << (k & 7))) left++;
-  return left;
-}
-
-static void afh_print() {
-  Serial.printf("# afh: plan %u/%u - %s%s\n", g_afh_plan, AFH_PLAN_COUNT - 1,
-                AFH_PLANS[g_afh_plan].name,
-                g_afh_sent ? "" : " (nothing has been sent to the radio)");
-}
-
-// Select a plan and hand it to the controller. The only caller is the 'a'
-// command.
-static void afh_apply(uint8_t idx) {
-  if (idx >= AFH_PLAN_COUNT) return;
-  g_afh_plan = idx;
-  uint8_t map[10];
-  uint8_t left = afh_build(AFH_PLANS[idx], map);
-  if (left < AFH_MIN_CHANNELS) {
-    Serial.printf("# afh: %s would leave %u of 79 channels and the radio needs "
-                  "at least %u - nothing sent\n",
-                  AFH_PLANS[idx].name, left, AFH_MIN_CHANNELS);
-    return;
-  }
-  wii.set_afh_channel_map(map);
-  g_afh_sent = true;
-  Serial.printf("# afh: %s - %u of 79 channels left in play\n",
-                AFH_PLANS[idx].name, left);
-  if (g_handle && !g_we_called)
-    status("afh: the REMOTE placed this call, so IT owns the hop sequence and "
-           "this map stops at our own radio. To be master, let the bridge page "
-           "it: restart the bridge and press nothing on the remote.");
 }
 
 static void wiimote_cb(wiimote_event_type_t ev, uint16_t handle, uint8_t* data, size_t len) {
@@ -560,9 +455,6 @@ static void wiimote_cb(wiimote_event_type_t ev, uint16_t handle, uint8_t* data, 
       // red SYNC button stores the bridge and comes back on its own, which is
       // indistinguishable in a log from the bridge's own paging working. Only
       // the outgoing path raises WIIMOTE_EVENT_NEW, so this is the whole test.
-      g_we_called = g_attempt_open;   // kept, because g_attempt_open is cleared
-                                      // as soon as the first report arrives —
-                                      // and the AFH note below needs it later
       status(g_attempt_open ? "Remote connected (the bridge called it)."
                             : "Remote connected (it called the bridge).");
       wii.set_led(handle, 0x01);
@@ -584,13 +476,6 @@ static void wiimote_cb(wiimote_event_type_t ev, uint16_t handle, uint8_t* data, 
       break;
     case WIIMOTE_EVENT_LINK_QUALITY:
       if (len >= 1) { g_quality = data[0]; g_link_fresh = true; }
-      break;
-    case WIIMOTE_EVENT_AFH_STATUS:
-      // Only ever arrives in answer to the 'a' command; 0x12 is the radio
-      // saying the map left it too few channels to hop around.
-      if (len >= 1)
-        Serial.printf("# afh: the radio %s the channel map (status 0x%02X)\n",
-                      data[0] == 0x00 ? "took" : "REFUSED", data[0]);
       break;
     case WIIMOTE_EVENT_DATA:
       // The first report to arrive means the channel is up -> start the IR
@@ -653,10 +538,9 @@ void setup() {
   // a couple of flag flips guessed from how the crosshair felt, "was that the
   // firmware I think it was?" stopped being a rhetorical question.
   Serial.printf("# build %s %s | MIRROR_X=%d MIRROR_Y=%d | beacon %.2fx%.2f @ %.2f,%.2f"
-                " | no recoil | keep-alive %s ('k')\n",
+                " | no recoil\n",
                 __DATE__, __TIME__, (int)CAM_MIRROR_X, (int)CAM_MIRROR_Y,
-                BEACON_W, BEACON_H, BEACON_CX, BEACON_CY,
-                KEEPALIVE_ON ? "ON" : "off");
+                BEACON_W, BEACON_H, BEACON_CX, BEACON_CY);
   // What worked last time, kept across the reboot the Mac causes every time it
   // opens the serial port — which is the whole reason the SYNC dance existed.
   prefs.begin("duckhunt", false);
@@ -679,22 +563,13 @@ void loop() {
   // One-letter commands on the same port, for the debugging tools:
   //   d = dump the dots on every camera report (tools/ir_view.py wants this)
   //   s = back to twice a second (the default)      o = no dumping at all
-  //   k = keep-alive on/off (an output report every 250 ms, no motor)
   //   p = pair SYNC-style on the next connection   f = forget the stored remote
-  //   a = step through the AFH channel plans (off by default — nothing is sent
-  //       to the radio until this is typed)        ? = what all of it is set to
+  //   ? = the axes, the remote and what is stored
   while (Serial.available()) {
     switch (Serial.read()) {
       case 'd': g_dump_ms = 0;   g_dump_on = true;  status("dot dump: every report"); break;
       case 's': g_dump_ms = 500; g_dump_on = true;  status("dot dump: 2 Hz"); break;
       case 'o': g_dump_on = false;                  status("dot dump: off"); break;
-      case 'k':
-        KEEPALIVE_ON = !KEEPALIVE_ON;
-        Serial.printf("# keep-alive: %s (an output report every %lu ms, no motor)\n",
-                      KEEPALIVE_ON ? "ON" : "off", KEEPALIVE_MS);
-        break;
-      case 'x': CAM_MIRROR_X = !CAM_MIRROR_X; print_axes(); break;
-      case 'y': CAM_MIRROR_Y = !CAM_MIRROR_Y; print_axes(); break;
       // 'p' = pair the way the red SYNC button asks for, which is the only way
       // the REMOTE stores the bridge — after that any button on it reconnects.
       // Press SYNC, then send 'p' (or the other way round, within the 20 s).
@@ -708,11 +583,7 @@ void loop() {
         g_have_addr = false; g_addr_saved = false; g_pair_mode = PAIR_NONE;
         status("forgot the stored remote.");
         break;
-      // 'a' = step to the next AFH channel plan and send it (see the block
-      // above). Nothing sends this by itself, so the radio keeps its own
-      // behaviour until this is typed by hand.
-      case 'a': afh_apply((g_afh_plan + 1) % AFH_PLAN_COUNT); break;
-      case '?': print_axes(); print_remote(); afh_print(); break;
+      case '?': print_axes(); print_remote(); break;
       default: break;                               // newlines and other noise
     }
   }
@@ -761,10 +632,4 @@ void loop() {
                   (int)g_rssi, g_quality);
   }
 
-  // the keep-alive: one harmless output report on a timer, to test whether a
-  // link that is being talked to stays faster than one that is not
-  if (KEEPALIVE_ON && g_handle && millis() - g_keepalive_last >= KEEPALIVE_MS) {
-    g_keepalive_last = millis();
-    wii.set_rumble(g_handle, false);        // rumble bit clear = motor stays off
-  }
 }

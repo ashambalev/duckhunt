@@ -41,21 +41,20 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pip install -r requirements-dev.txt        # only to run the tests
 
-python3 main.py --pygame                                     # aim with the mouse (development)
-python3 main.py --pygame --serial /dev/tty.usbserial-0001    # aim with the light gun
-python3 main.py --pygame --serial /dev/tty.usbserial-0001 --practice   # ... starting on practice
+python3 main.py                                              # aim with the mouse (development)
+python3 main.py --serial /dev/tty.usbserial-0001             # aim with the light gun
+python3 main.py --serial /dev/tty.usbserial-0001 --mode practice   # ... starting on practice
 ```
 
 The round is picked **in the game**, on the title screen — **M**, or **A on the
 remote** — so handing the gun to a first-timer and taking it back is not a
-restart. `--practice` (or `--mode NAME`) only says which round the evening opens
-on.
+restart. `--mode NAME` only says which round the evening opens on.
 
 **Playing with the light gun**, start to finish:
 
 ```bash
 ls /dev/tty.usbserial*                                       # find the bridge (usually -0001)
-python3 main.py --pygame --serial /dev/tty.usbserial-0001    # play
+python3 main.py --serial /dev/tty.usbserial-0001             # play
 #   Then press 1 and 2 together on the remote. If the gun was in use a moment
 #   ago, not even that: the bridge pages it by address and it comes back on its
 #   own. The red SYNC button under the battery cover is not needed any more.
@@ -90,16 +89,10 @@ trying: ...`) and remembers the one that worked in flash, so the guessing happen
 once. Two one-letter commands on the same serial port drive it by hand: **`p`**
 pairs SYNC-style on the next connection — the only kind the *remote* stores, after
 which any button on it reconnects — and **`f`** makes the bridge forget the remote
-it knows. (**`?`** prints everything the bridge is set to, **`k`** toggles the
-link keep-alive and **`a`** steps through the
-[AFH channel plans](#telling-the-radio-which-channels-to-skip-a) — off unless
-asked for.)
+it knows. (**`?`** prints everything the bridge is set to: the axes, the remote
+it remembers, the beacon rectangle it was flashed with.)
 
-Watch what the bridge itself is saying with `tools/wiimote_monitor.py` — it prints the
-firmware's `# ...` status lines, so you can see whether the remote is pairing at all
-and whether the camera is picking up IR dots.
-
-To *see* what the camera sees, run `tools/ir_view.py`: it draws the blobs in the
+To see what the camera sees — and what the bridge is saying while it pairs — run `tools/ir_view.py`: it draws the blobs in the
 sensor's own 1024×768 space, the quad the firmware builds out of them, and where the
 aim lands on screen — and it writes the whole run to `logs/ir_view_<time>.jsonl`.
 While aiming at a known corner hold **1**–**4** (**5** for the centre): those tags
@@ -121,7 +114,7 @@ the `[gun]` rectangle, the letterbox conversion, the crosshair, the hitbox — c
 be tested with a known aim point instead of a shaking hand. Two terminals:
 
 ```bash
-.venv/bin/python main.py --pygame --udp           # the game, listening
+.venv/bin/python main.py --udp                    # the game, listening
 .venv/bin/python tools/fake_gun.py --fire         # aim at each corner in turn, and shoot
 .venv/bin/python tools/fake_gun.py --sweep        # a slow circle
 ```
@@ -146,26 +139,13 @@ The controls are listed on the title screen and on the results screen — you ar
 standing three metres away with a gun in both hands, which is no place to be
 looking things up. In game: **mouse / gun** aims, **left button / trigger**
 fires, **Esc** stops the round early and takes you to the result with the score
-so far still offered to the table, **B** cycles the background, **Tab** shows
-where the IR beacons go, **G** puts the gun's own numbers on the HUD (report
-rate, how clumped the reports are, how often the beacons are out of view, how old
-the aim is — "it feels laggy" has three different causes and these tell them
-apart), **L** steps the crosshair's lead through 0 / 20 / 35 / 50 ms live and
-puts that HUD up while it does (the difference is a feel, and a feel does not
-survive the minute it takes to restart the game and get the remote back),
-**F1** sights the gun in on five targets (from the title screen or the score
-table) and **F2** turns that correction on and off so it can be judged rather
-than assumed — `--no-calibration` is the same thing decided at startup, and the
-difference matters: F2 toggles a correction that was *loaded*, while
-`--no-calibration` means `calibration.json` is never read at all, which is the one
-to reach for when you suspect the file itself — **Space** or the trigger leaves the
-results screen, **Q** quits.
-`--align` starts with those
-targets up, and what it draws follows `[gun] frame`: with `"picture"`, brackets in
-the picture's four corners to tape a bundle into; with `"display"`, the letterbox
-bars go pale grey so the screen's own edge is visible and the brackets sit in the
-screen's corners, for beacons on the bezel — plus a thin blue set on the
-picture's corners to aim at and check the numbers.
+so far still offered to the board, **B** cycles the background, **G** puts the
+gun's own numbers on the HUD (report rate, how clumped the reports are, how often
+the beacons are out of view, how old the aim is — "it feels laggy" has three
+different causes and these tell them apart), **F1** sights the gun in on five
+targets (from the title screen or the results screen) and **F2** turns that
+correction on and off so it can be judged rather than assumed, **Space** or the
+trigger leaves the results screen, **Q** quits.
 
 ### Bringing up the gun
 
@@ -178,7 +158,8 @@ picture's corners to aim at and check the numbers.
    parser ignores them.
 3. Stick the four IR LEDs down and say where they ended up, in `[gun]`:
    on the corners of the **game's picture** (`frame = "picture"` — nothing to
-   measure, `--align` puts targets there, and it plays the same on any screen), or
+   measure, and it plays the same on any screen; the game prints the picture's
+   exact rectangle at startup), or
    on the **bezel** around the screen (`frame = "display"` plus the four numbers
    `tools/ir_view.py --bezel` prints — nothing stuck to the glass, at the cost of
    a longer playing distance). Then run the game with `--serial`. See
@@ -192,8 +173,8 @@ at once, and the camera's view is narrow (~33°), so there is a minimum playing
 distance — about 2 m for a 27" monitor and 4.3 m for a 55" TV with the beacons on
 the picture's corners, since aiming into one corner pushes the opposite one out of
 frame ([`docs/BUILD.md`](docs/BUILD.md) has the table). The distance follows the
-width of the beacon rectangle, so `[scene] scale` shrinks the picture (and the
-rectangle with it) to bring a TV within reach of a sofa. On fewer than four dots it drops back to the old centroid guess: the
+width of the beacon rectangle, so a TV wants a sofa further back than a monitor
+does. On fewer than four dots it drops back to the old centroid guess: the
 crosshair keeps moving, but it is no longer screen-referenced.
 
 ### Sighting the gun in
@@ -211,7 +192,7 @@ So it gets measured. **F1**, or `--calibrate`:
 
 ```bash
 cd /Users/evgenychernyak/projects/duckhunt
-.venv/bin/python main.py --pygame --serial /dev/tty.usbserial-0001 --calibrate
+.venv/bin/python main.py --serial /dev/tty.usbserial-0001 --calibrate
 ```
 
 Five round targets — the centre, then the four corners — shot one at a time
@@ -255,8 +236,7 @@ Shots that land with no beacons in view are **not** recorded — the last positi
 is a memory, not an aim, and baking one into the fit is how a calibration ends up
 worse than none. `calibration.json` keeps the geometry it was measured on, and
 the game says so at startup if the picture or the `[gun]` numbers have changed
-since. Sighting in belongs to `--pygame`: the ASCII frontend has no letterboxed
-picture to measure against.
+since.
 
 ### The lag, and where it actually is
 
@@ -284,60 +264,21 @@ measurement that settled that is in [the run notes below](#to-check-on-the-next-
 where the player stands** — on a USB extension, not next to the screen — and use
 the -32U's external antenna.
 
-The rest is hidden rather than removed: `[gun] lead` draws the crosshair where
-the aim is *going* instead of where it was last heard from, advancing it along
-its own velocity by `lead` seconds plus however stale the last report already
-is, capped at `[gun] lead_max`. The velocity is fitted over the last 100 ms of
-reports rather than smoothed frame by frame (an exponential average lags by
-~1.9 frames — 31 ms of the 40 it is meant to cancel), and a report that never
-arrived is not a sample, so a stalled link leaves the crosshair coasting instead
-of dragging it to a stop. Replayed against a 1.5-playfield/s sweep with 45 ms of
-link delay, the crosshair sits 5.9 % of the screen behind the barrel with `lead
-= 0` and 3.4 % at 0.02.
+**Extrapolation was tried and taken back out.** The crosshair can be drawn
+where the aim is *going* rather than where it was last heard from — advanced
+along a velocity fitted over the last 100 ms of reports, by a `lead` of a few
+tens of milliseconds. Two evenings of A/B with the gun said it works: 40 ducks
+in 55 shots (73 %) at 35 ms against 46 % at 20 ms, with the overshoot that made
+the first run look bad traced to a ceiling left above the lead, so that every
+stall in the link briefly tripled it.
 
-Then it was played with the gun, which changed the answer. Lead settings of
-0.035 and 0.05 visibly **overshot** on a sweep that stops — and the culprit was
-not mostly the lead but the gap between `lead` and `lead_max`. That run measured
-~1.5 stalls longer than 50 ms per second, and each one lets the lead grow
-towards the ceiling: at `lead = 0.02, lead_max = 0.06` a stall tripled it,
-several times a second, right while the barrel was moving. Simulated against a
-decelerating sweep with those stalls in it, how far the crosshair sails past the
-point the barrel stopped at:
-
-| `lead` / `lead_max` | past the stop | mean error |
-|---|---|---|
-| 0 / 0 | 0.4 % | 4.0 % |
-| 0.02 / 0.02 | 1.8 % | 2.9 % |
-| 0.02 / 0.035 | 3.2 % | 2.5 % |
-| **0.035 / 0.035** | **3.2 %** | **2.2 %** |
-| 0.035 / 0.06 | 5.5 % | 2.1 % |
-
-Tying the two together is what settled it. With `lead_max` following `lead`,
-and on a link that had stopped stalling — 0.2 stalls a second against the
-earlier 1.5, after the receiver was moved — two full rounds back to back, every
-duck downed in both, picked the value by themselves:
-
-| `lead` | ducks | shots | hit rate |
-|---|---|---|---|
-| 0.02 | 118 | 254 | 46 % |
-| **0.035** | 40 | 55 | **73 %** |
-| 0.05 | 40 | 67 | 60 % |
-
-The 0.05 round is the *later* one, so this is not practice talking. It ships at
-`lead = lead_max = 0.035`. Raising `lead_max` above `lead` only pays on a link
-clean enough that coasting through a stall is worth the occasional overshoot —
-and even on this one it buys 0.1 % of mean error for 2.3 % more overshoot, so
-no. A dropout longer than `lead_max` gives the guess back over 0.2 s, so a dead
-link parks the crosshair on the last thing the gun actually said rather than
-8 % of the screen away from it.
-
-Two measured levers are left unused, for a session with the gun rather than the
-day before one. Fitting the velocity over 60 ms instead of 100 takes the
-overshoot from 1.8 % to 1.5 % for 8 % more jitter; fitting a *parabola* instead
-of a straight line — the slope of a line over a window is the velocity in the
-middle of that window, i.e. 50 ms stale, which is exactly wrong while the barrel
-is slowing — takes it to 1.4 % with the mean error down to 2.7 %, at the cost of
-roughly a third more noise in the velocity. Both are in `AimLead`.
+It still came out, and the reason is not in the hit rate. A crosshair thrown
+ahead of the barrel leaves the barrel the moment you move, and a sight that does
+not sit where the gun is pointed is not a sight — the hit rate was bought with a
+crosshair that lies, and it lies most in exactly the movement you aim with. So
+the game draws the aim the gun reported, and the ~45 ms is paid for where it is
+actually spent: by standing the bridge next to the player. `git log` has the
+code and the tables if the question ever comes back.
 
 **In a hall full of other radios** — a conference, a fair — expect the link, not
 the game, to be what gives. Bluetooth Classic hops 79 1-MHz channels 1600 times
@@ -366,62 +307,24 @@ order it is worth doing:
 - **Measure, do not guess.** The bridge prints `# link: rssi -NN dBm` once a
   second and **G** puts the report rate, the stalls and the aim's age on the
   HUD. Above -45 dBm the stream is healthy; -50 and below is where the stalls
-  start. Try **HOME** on the remote (or **K**) as well — it turns on the
-  bridge's keep-alive, which is there to stop a quiet link dropping into sniff
-  mode.
+  start.
 - **If the signal is good and the rate sags anyway**, the band is crowded rather
-  than the link long, and there is a lever for exactly that — below.
+  than the link long — and the one lever software had for that is discussed
+  below, along with why it is not in the sketch any more.
 
-#### Telling the radio which channels to skip (`a`)
+#### The channel map, and why it is not here
 
-Adaptive hopping already drops channels the controller measures as bad, but it
-has to collide with them first and re-test them afterwards, and every one of
-those collisions is a retransmission — the hole in the stream that feels like
-lag. Where the interference is known in advance and sits in the same place all
-day, the host can say so up front:
-`HCI_Set_AFH_Host_Channel_Classification` is in the vendored library, and **`a`
-on the serial port steps through a table of plans** and sends the one it lands
-on:
+Where the interference is known in advance, a host can tell the controller which
+channels not to bother hopping onto (`HCI_Set_AFH_Host_Channel_Classification`,
+which the vendored library implements). The bridge had a table of Wi-Fi plans
+behind an `a` command for exactly that, and it was measured: the ESP32's
+controller takes the map (`status 0x00`), and a reboot forgets it.
 
-```
-off, every channel back in play   79 of 79 channels
-Wi-Fi 1                           57      (2402-2423 MHz dropped)
-Wi-Fi 6                           56      (2426-2448)
-Wi-Fi 11                          56      (2451-2473)
-Wi-Fi 1 + 6                       34
-Wi-Fi 6 + 11                      33
-Wi-Fi 1 + 6 + 11, narrow          28      (the middle 17 MHz of each)
-```
-
-**It is off, and nothing sends it by itself.** Nothing runs at boot, on a
-connection or on a timer; the game sends `o` and `k`, `tools/ir_view.py` sends
-`d`, `s`, `x` and `y`, and none of them is `a`. Until it is typed, the radio
-behaves exactly as it does today. `?` says which plan is selected and whether
-anything was ever sent.
-
-Three things to know before using it:
-
-- **It only bites while the bridge is the master** of the piconet — that is, when
-  the bridge placed the call (`Remote connected (the bridge called it)`). If the
-  remote called in, it owns the hop sequence and the map goes no further than our
-  own radio; the bridge says so when you apply a plan. Restarting the bridge and
-  pressing nothing on the remote is what gets the call placed from this side.
-- **Blocking is not boosting.** The traffic moves into whatever is left, so too
-  wide a plan makes things worse. Start with the one Wi-Fi channel the hall is
-  actually loudest on.
-- **Fewer than 20 channels left is refused** by the radio itself (HCI status
-  0x12) — and by the sketch before it gets that far, which is why blocking all of
-  1, 6 and 11 is offered only in its narrow form. A refused map changes nothing.
-
-**The ESP32's controller does implement it** — measured, with the firmware
-flashed and the port watched: `a` produced `# afh: Wi-Fi 1 - 57 of 79 channels
-left in play` followed by `# afh: the radio took the channel map (status 0x00)`,
-and again for the next plan. Boot printed nothing about AFH at all, and a
-reboot — which is what opening the serial port does — puts it back to plan 0
-with nothing sent, so a plan cannot be left switched on by accident. What is
-still unmeasured is whether it *helps*: that needs a crowded band and an A/B
-against the report rate, which is a thing to do next to a busy access point
-rather than at a desk.
+Whether it *helps* needs a hall full of access points and an A/B on the report
+rate, which is not a thing a desk can answer — and it only bites at all while
+the bridge is the piconet's master, i.e. when it placed the call. A lever that
+cannot be judged where the gun is used is a lever nobody pulls, so it is out of
+the sketch; `git log` has it.
 
 ### To check on the next run
 
@@ -506,16 +409,6 @@ the gun comes out:
       have to fit in ~33°), not by the radio. The two constraints pull in
       opposite directions, and a three-metre cable is what stops them fighting.
 
-- [ ] **Does the AFH channel map help in a crowded hall? The controller takes
-      it — measured.** `a` on the serial port answered `# afh: the radio took
-      the channel map (status 0x00)` for two plans in a row, boot said nothing
-      about AFH, and a reboot returns it to plan 0 with nothing sent. So the
-      command works and cannot be left on by accident. Whether it *helps* is the
-      part still open, and it cannot be answered at a quiet desk: it wants a
-      busy access point, an A/B on the report rate with the plan on and off, and
-      a remote the bridge itself called (`the bridge called it`) — as a slave it
-      owns no hop sequence and the map goes nowhere.
-
 - [ ] **Do the beacons and the picture line up?** The picture is smaller than the
       display, because the pixel art is scaled by a whole number and centred
       (1280×915 inside 1470×956 on this Mac — bars of 6.5% down the sides, 2.1%
@@ -579,18 +472,17 @@ the gun comes out:
 
 | Command | Path |
 |---|---|
-| `python3 main.py --pygame` | mouse — no hardware, for development |
-| `python3 main.py --pygame --serial PORT` | **the current gun**: Wiimote → ESP32-WROOM-32U → USB-Serial |
-| `python3 main.py --pygame --udp` | the same bridge over Wi-Fi/UDP (port 4210) — the Mac side (`input/udp_gun.py`) is ready, the firmware sends serial today |
-| `python3 main.py` | the ASCII/terminal frontend — the original prototype, same core, handy without a window. Its rounds never reach the board and it does not ask who was shooting: the `+` it draws is the aiming, so a keyboard round is not the game the board measures |
+| `python3 main.py --serial PORT` | **the gun**: Wiimote → ESP32-WROOM-32U → USB-Serial |
+| `python3 main.py` | the mouse — no hardware, for development. Never a record: a mouse has no sights to aim down, so there the crosshair *is* the aiming |
+| `python3 main.py --udp` | the same `x,y,b` off the network, which is how `tools/fake_gun.py` drives the game with no hardware at all |
 
-The last one is a leftover from the first prototype rather than the goal; every
-input source works with either frontend, since both sit on the same `World` and
-the same `InputSource`.
+Anything able to say where it is pointing can drive the game: an `InputSource`
+is three methods, and the `World` has never heard of a gun.
 
 ## Roadmap
 
-- [x] **Stage 0–1** — playable prototype, pure logic core, terminal frontend.
+- [x] **Stage 0–1** — playable prototype, pure logic core (an ASCII frontend
+      rode on it until Sept 2026, when the pixel one had long replaced it).
 - [x] **Stage 2** — pygame pixel frontend: NES sprites, backgrounds, dog, scores.
 - [x] **Stage 3** — ESP32-WROOM-32U ↔ Wii Remote bridge, IR camera enabled, `x,y,b`
       over USB-Serial.
@@ -626,6 +518,13 @@ lands. Firing costs something, which is the whole point of counting shots:
 | a shot that hit nothing | **−1** |
 | a shot that hit the dog | **−5** |
 
+What is left of the magazine is on the belt in the **bottom-left corner**: one
+shell per four shots, a quarter off the leading shell per shot, ten shells for the
+forty. It is down there because the ducks are kept out of the bottom of the
+picture (`[duck] sky`), so the one gauge you watch while aiming can never cover
+the thing you are aiming at — and it is a belt rather than a number because
+"nearly out" is something you should be able to see without reading.
+
 The score can go below zero and is shown below zero — clamping it at nothing would
 only hide that the round went badly. Counting the ducks alone made every shot free,
 and the best strategy was to hold the trigger down.
@@ -634,8 +533,8 @@ and the best strategy was to hold the trigger down.
 handing the gun to someone who has never held one: **ten ducks, slow, one in the
 air at a time**, unlimited ammunition, the crosshair on, and nothing sent to the
 board. One duck at a time is the only genuinely different mechanic in it (`[duck]
-max_alive = 1`); everything else is a smaller number. `--practice` starts on it;
-**M** on the title screen goes there and back.
+max_alive = 1`); everything else is a smaller number. `--mode practice` starts
+on it; **M** on the title screen goes there and back.
 
 **A mode is the round, never the rig.** A mode file may only set `[round]`,
 `[duck]`, `[score]` and `[gun] crosshair`; anything else in it is refused out loud
@@ -731,12 +630,12 @@ started on its own, one command for the whole scoreboard:
 
 ```bash
 cd /Users/evgenychernyak/projects/duckhunt
-.venv/bin/python -m leaderboard --browser                           # server + the tube-TV board
-.venv/bin/python main.py --pygame --serial /dev/tty.usbserial-0001 \
+.venv/bin/python -m leaderboard                                     # server + the tube-TV board
+.venv/bin/python main.py --serial /dev/tty.usbserial-0001 \
                          --leaderboard http://localhost:8420
 ```
 
-`python3 -m leaderboard --browser` is the whole scoreboard in one command: the
+`python3 -m leaderboard` is the whole scoreboard in one command: the
 server in a thread, and the board opened in the browser. Drag that window to the
 second screen and press **F** for fullscreen. It is drawn as a television set: a **4:3** tube in a
 plastic cabinet with a speaker grille, two knobs, a power lamp and feet — phosphor
@@ -745,16 +644,15 @@ picture that a camera sees on a real CRT. Green by default, `--color amber` or
 `--color white`, and `?cabinet=graphite` or `?cabinet=wood` for the case (`C` and
 `B` cycle them in the page).
 
-Drop `--browser` and the same command draws the **console board** in that terminal
-instead: box drawing, dot leaders, the same running line. It is the one for a Pi
-on a tty with no desktop. Both read the same server, so you can run one of each,
-and either can still be started on its own —
-`python3 -m leaderboard.server` plus `python3 -m leaderboard.display --url …` —
-which is what you want when the board lives on a box of its own.
+There was a second board for a while — the same table drawn in a terminal, for a
+Pi with no desktop. Two boards on one set of rows is one board too many to keep
+in step, and the Pi does not exist, so it is gone; the server can still be
+started on its own (`python3 -m leaderboard.server`) with the page opened from
+another machine, which is what you want when the board lives on a screen of its
+own.
 
 The server keeps **every** attempt in SQLite and the board shows the best run per
-player (`55 PTS · 33 DUCKS · 75% · 12 TRIES`), with a running line of records and
-totals
+player (`55 PTS · 33 DUCKS · 12 TRIES`), with a running line of records and totals
 scrolling along the bottom. A round played with the server down waits in
 `pending_runs.jsonl` and lands on the board the next time the game starts. The
 permanent switch is `[leaderboard] enabled = true` in `settings.toml`; the whole
@@ -764,9 +662,9 @@ thing is described in [`docs/LEADERBOARD.md`](docs/LEADERBOARD.md).
 to anyone not sitting at it, and it kept being written for a while after nothing
 read it back — which is not a fallback, it is a file. A round played with the board
 down is not lost either way: it goes to `pending_runs.jsonl` and arrives when the
-board is back. An old `scores.json` still in your project root is not wasted
-though — `python3 -m leaderboard.seed --from-scores` puts those evenings on the
-board, scored by the rule they were played under.
+board is back. An old `scores.json` in a project root is not wasted though —
+`python3 -m leaderboard.seed --from-scores` puts those evenings on the board,
+scored by the rule they were played under (this repo's own six are on it).
 
 Every shot is heard: the bang of the gun, a quack where it connected, and the dog
 laughing at whatever flew off unharmed ([Sound](#sound) below — `[sound] enabled =
@@ -813,7 +711,7 @@ band = 0.20           # and the bottom strip it never rises above
 ```
 
 Everything is in fractions of the screen rather than pixels, so the same numbers
-work identically in the pixel window and in the terminal. The game prints the
+work identically in a window and in fullscreen, on a monitor and on a TV. The game prints the
 values in effect on a single line at startup, so you can see which file was picked
 up:
 
@@ -886,7 +784,7 @@ The file can be deleted — the game will use the same values as defaults; you c
 also keep several sets:
 
 ```bash
-python3 main.py --pygame --settings hard.toml
+python3 main.py --settings hard.toml
 ```
 
 Broken values do not crash the game: an unrecognized key or a zero width gets a
@@ -979,35 +877,31 @@ and plays on in silence, the mixer handed back.
 | `modes/` | any other round, same rule — it shows up on the title screen on its own |
 | `tests/` | `pytest`: the board's queries and routes, the two rounds' arithmetic, the name screen driven headlessly |
 | `duckhunt/frontends/pygame_app.py` | **the pixel frontend**: sprites, backgrounds, dog, crosshair |
-| `duckhunt/frontends/terminal.py` | the ASCII frontend (the original prototype) |
 | `duckhunt/sound.py` | the three sounds: loading them, the `[sound]` volumes, playing one |
 | `duckhunt/input/base.py` | the input interface `InputSource` → `AimState(x, y, fire)` |
 | `duckhunt/input/serial_gun.py` | input from the ESP32 over USB-Serial (the `x,y,b\n` protocol) |
-| `duckhunt/input/udp_gun.py` | the same protocol over Wi-Fi/UDP |
-| `duckhunt/input/keyboard.py` | keyboard input (for development without hardware) |
+| `duckhunt/input/udp_gun.py` | the same protocol over UDP — what `fake_gun.py` drives |
 | `firmware/esp32_wiimote_bridge/` | **the current firmware**: ESP32-WROOM-32U ↔ Wii Remote → serial |
 | `firmware/libs/Wiimote/` | the `Wiimote` library plus the Duck Hunt patch (`enable_ir`) |
 | `tools/slice_spritesheet.py` | slicing the NES sprite sheet into `assets/sprites/` |
 | `tools/slice_backgrounds.py` | slicing the NES background sheet into `assets/backgrounds/` |
 | `tools/import_nes_sounds.py` | the cartridge's own Zapper, quack and dog laugh → `assets/sounds/` |
 | `tools/make_sounds.py` | the same three sounds synthesized instead, if you would rather not use the rip |
-| `tools/wiimote_monitor.py` | watching the raw `x,y,b` stream while debugging the gun |
 | `tools/ir_view.py` | drawing what the camera sees (the four blobs, the quad, the aim), logging a test run to `logs/`, `--plan`: where to tape the beacons and how far back to stand, `--bezel`: the `[gun]` numbers for beacons on the bezel |
 | `tools/fake_gun.py` | the gun's UDP stream without the gun — testing the aim, the crosshair and the hits from a known aim point |
 | `docs/BUILD.md` | BOM, wiring and assembly of the hardware |
 | `docs/TODO.md` | what is left to do on the gun and the game, most useful first |
 | `leaderboard/server.py` | the leaderboard's HTTP server: six routes over one SQLite file |
 | `leaderboard/store.py` | the SQL behind it — every attempt kept, best run per player queried |
-| `leaderboard/display.py` | the console board: the same scoreboard in a terminal |
 | `leaderboard/board.html` | the browser board for the second screen — a tube TV, rolling band and all |
-| `leaderboard/__main__.py` | `python3 -m leaderboard`: server plus a board, one command |
-| `leaderboard/seed.py` | filling the board from an old `scores.json`, or with demo rounds |
+| `leaderboard/__main__.py` | `python3 -m leaderboard`: the server plus the board in a browser, one command |
+| `leaderboard/seed.py` | putting an old `scores.json` on the board |
 | `duckhunt/net/leaderboard_client.py` | the game's side: post the round, queue it when the board is off |
-| `docs/LEADERBOARD.md` | the leaderboard server, its console board and how they are run |
+| `docs/LEADERBOARD.md` | the leaderboard server, its board and how they are run |
 
 **The layers are independent:** `core` knows nothing about rendering or the
-hardware, so both frontends hook onto it, and every input source speaks the same
-`x,y,b` gun protocol.
+hardware — it is `World.update(dt, x, y, fire)` and nothing else — and every
+input source speaks the same `x,y,b` gun protocol.
 
 ## Building the hardware
 

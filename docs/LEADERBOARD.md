@@ -1,4 +1,4 @@
-# 🏆 Leaderboard — a separate server with a console scoreboard
+# 🏆 Leaderboard — a separate server with a scoreboard of its own
 
 The game used to keep its top ten in `scores.json` next to `settings.toml`: local
 to one Mac, invisible to anyone not sitting at it, and it only remembered the ten
@@ -6,8 +6,8 @@ best rounds — every other attempt was thrown away.
 
 That is now a **separate leaderboard**, on a screen of its own: the game asks who
 was shooting *after* the round, posts one row, and the server keeps **every
-attempt** in SQLite while a console board shows **the best result per player**,
-with a running line scrolling along the bottom.
+attempt** in SQLite while the board shows **the best result per player**, with a
+running line scrolling along the bottom.
 
 Two rules decide everything below:
 
@@ -38,7 +38,7 @@ MAC (the game)                          SERVER BOX (a Pi, or the same Mac)
                                                       │ GET /api/stats
                                                       ▼
                                         ┌──────────────────────────────────┐
-                                        │  leaderboard/display.py (blessed)│
+                                        │  leaderboard/board.html (a tube TV)│
                                         │   ╔════ DUCK HUNT — TOP 10 ════╗ │
                                         │   ║ 1. EUGENE  55 pts  33 ducks ║ │
                                         │   ╚════════════════════════════╝ │
@@ -46,7 +46,7 @@ MAC (the game)                          SERVER BOX (a Pi, or the same Mac)
                                         └──────────────────────────────────┘
 ```
 
-Three processes, deliberately: the game must never freeze or crash because the
+Separate processes, deliberately: the game must never freeze or crash because the
 scoreboard is off, and the scoreboard must survive the game being restarted twenty
 times an evening. They meet at one HTTP endpoint and one SQLite file.
 
@@ -54,9 +54,9 @@ times an evening. They meet at one HTTP endpoint and one SQLite file.
 delivery matters far more than latency, and a lost UDP datagram is a lost record.
 
 **Why SQLite.** One writer, a handful of rows per minute, and the query we need
-("best run per player") is a three-line window function. No server to run, no
-dependency to install — `sqlite3` and `http.server` are standard library, and
-`blessed` was already here for the terminal frontend. `requirements.txt` did not
+("best run per player") is a three-line window function. No server to run and no
+dependency to install: `sqlite3` and `http.server` are standard library, and the
+board is one HTML file the same server hands out. `requirements.txt` did not
 change.
 
 ## Running it
@@ -67,55 +67,48 @@ Two commands, one for the scoreboard and one for the game:
 cd /Users/evgenychernyak/projects/duckhunt
 
 # the scoreboard: the server, and the tube-TV board in a browser window
-.venv/bin/python -m leaderboard --browser
+.venv/bin/python -m leaderboard
 
 # and the game, told where to send its rounds
-.venv/bin/python main.py --pygame --serial /dev/tty.usbserial-0001 \
+.venv/bin/python main.py --serial /dev/tty.usbserial-0001 \
                          --leaderboard http://localhost:8420
 ```
 
 Drag the browser window to the second screen and press **F** — it goes fullscreen
-and stays there all evening. Drop `--browser` and the console board is drawn in
-that terminal instead; both read the same server, so you can have one of each.
+and stays there all evening.
 
-`python3 -m leaderboard` runs the server in a thread of this process: with
-`--browser` it opens the page and holds the terminal until Ctrl-C, and without it
-draws the console board in front — one thing to start, one thing to quit (`q`
-stops the board and takes the server with it). Every flag that is not the server's goes to
-the board, so `--color amber --top 12 --ducks 50` work here too. The server's
-per-run lines cannot share a terminal with a board being drawn on it, so they go
-to `leaderboard.log` next to the database (`--log FILE` moves it, `--log -` throws
-it away). Started a second time on a port that already answers, it shows that
-board instead of failing on "address already in use".
+`python3 -m leaderboard` runs the server in a thread of this process, opens the
+page and holds the terminal until Ctrl-C: one thing to start, one thing to quit.
+The flags that shape the page are turned into its query string, so
+`--color amber --top 12 --ducks 50` work here. The server's per-run lines would
+scroll past unread, so they go to `leaderboard.log` next to the database
+(`--log FILE` moves it, `--log -` throws it away). Started a second time on a
+port that already answers, it shows that board instead of failing on "address
+already in use".
 
-Two processes are still the right thing when the board lives on a Pi and the game
-on the Mac, or when either has to be restarted without the other:
+Two processes are still the right thing when the board is on one screen's machine
+and the game on another, or when either has to be restarted without the other:
 
 ```bash
 .venv/bin/python -m leaderboard.server --port 8420 --db leaderboard.db
-.venv/bin/python -m leaderboard.display --url http://raspberrypi.local:8420
+# ... and http://raspberrypi.local:8420/ in a browser over there
 ```
 
 `--leaderboard URL` is the one-off; the permanent way is `[leaderboard] enabled =
 true` in `settings.toml`. `--no-leaderboard` turns it off for one session,
-`--player NAME` skips the question after every round, and `DUCKHUNT_LEADERBOARD`
-in the environment sits between the flag and the file.
+`--player NAME` skips the question after every round.
 
-Something to look at before anyone has played:
+Rounds the board never saw — an old `scores.json` from before it existed:
 
 ```bash
-.venv/bin/python -m leaderboard.seed --demo 75      # 75 invented rounds, 15 players
-.venv/bin/python -m leaderboard.seed --clear-demo   # and take them back out again
 .venv/bin/python -m leaderboard.seed --from-scores  # import the local scores.json
 ```
 
-The invented players have names, surnames and form: each one has a share of the
-flock they usually down and an aim of their own, so their attempts cluster around
-their own number, a good player has one unusually good night, and the board ends
-up the shape a real one will be — a few close at the top, a long tail, and
-somebody who has played thirteen times to get there. Every demo row is
-`client_id = 'demo'`, which is all `--clear-demo` needs to take them out again
-without touching a round anybody actually shot.
+It is idempotent (the row's own id is derived from the row), so running it twice
+does not double the board. There used to be a demo generator next to it that invented
+players with names, surnames and form, to see the board full before anyone had
+played; the board has real rounds on it now, and invented ones next to them are
+just a thing to remember to delete.
 
 ## The data
 
@@ -196,7 +189,7 @@ LIMIT :limit;
 ```
 
 `attempts` comes free from the same pass, and the board shows `55 PTS … 33 DUCKS …
-12 TRIES` — which is the fun part of keeping every row. A personal best is a better
+12 TRIES` (the row's `accuracy` and `finished_at` are still served, just not drawn) — which is the fun part of keeping every row. A personal best is a better
 *score* now, not more ducks: `answer()` compares scores, so a round that caught
 fewer ducks but wasted far fewer shots is the improvement it says it is.
 
@@ -255,9 +248,10 @@ nobody can debug.
   one number that is **not** bounded: a round genuinely can finish at `−35`, and
   clamping it at zero would only hide the worst round of the evening, which is half
   the entertainment.
-- **Optional shared secret**: `--token SECRET` on the server, `X-Duckhunt-Key` on
-  the request, compared with `hmac.compare_digest`. Off by default (home LAN);
-  `[leaderboard] token` on the game's side when it goes to a public event.
+- **No authentication.** The board is on the house LAN, and a shared secret was
+  one more thing to keep in step between the server, the game and a page that
+  cannot set a header on its own fetches. If this ever goes to a public event,
+  the place for it is a reverse proxy in front, not four files here.
 
 `GET /api/stats` feeds the running line: rounds played, distinct players, ducks
 downed, today's best, the standing record, and the most recent run (with
@@ -311,42 +305,30 @@ thread beside the board.
 - `PRAGMA journal_mode=WAL` so the display's reads never block a write, and
   `PRAGMA busy_timeout=5000` for the rare overlap.
 - A connection per request; nothing shared between threads.
-- `--host 0.0.0.0 --port 8420 --db leaderboard.db --token …`
+- `--host 0.0.0.0 --port 8420 --db leaderboard.db`
 - One line per accepted run on stdout, so the terminal it runs in *is* the audit
   trail, leading with the number the board ranks by:
   `18:21:12  eugene  44 pts  24/40  92%  61s  rank 3`.
 
-**Autostart on the Pi** (once it lives on a box of its own): a `systemd` unit for
-the server and a second one for the display on tty1, both `Restart=always`; on a
+**Autostart on the Pi** (once it lives on a box of its own): a `systemd` unit
+for the server, `Restart=always`, with a browser started on the display; on a
 Mac, the same with a `launchd` plist. Sketches go here when it happens — and not
 before, because until there is a box the unit is a guessed user, a guessed path
 and a guessed tty that nobody can run once to check. On this Mac there is nothing
 for it to fix: `python3 -m leaderboard` is already one command, and a round posted
 while the server is down is not lost but queued.
 
-## Two boards
-
-The same data, drawn two ways, because they are good at different things.
-
-| | `board.html` (browser) | `display.py` (terminal) |
-|---|---|---|
-| Looks | a 4:3 television in a plastic cabinet: glow, scanlines, aperture grille, vignette, the roll band | text: box drawing, dot leaders, dim rows |
-| Shows | the same one board: best round per player, best first | the same |
-| Needs | a browser and a desktop | a terminal, any terminal |
-| Where it wins | the screen people stand around | a Pi on a tty, SSH, no desktop at all |
-
-**The browser one is the one to put on the second screen.** A terminal can draw
-text and change its colour; it cannot do phosphor bloom, a curved bezel, or a
-bright band drifting down the picture — the beat you see when a camera films a
-CRT, because the tube's refresh and the shutter never quite agree. Those are three
-CSS overlays here, and they are most of what makes a scoreboard read as *1983*
-rather than as *a terminal with green text*.
-
-## The browser board
+## The board
 
 `leaderboard/board.html`, served by the same server at `/`. One file, no build, no
 dependency; the server reads it from disk on every request, so tuning how it looks
 is a reload rather than a restart.
+
+There was a second one for a while, `leaderboard/display.py`: the same rows drawn
+in a terminal with `blessed`, box drawing and dot leaders, for a Pi on a tty with
+no desktop. It was good, and it is gone — two boards over one set of rows is two
+things to keep in step every time a column moves, and the Pi it was for does not
+exist. `git log` has it if a keyboard-less box ever turns up.
 
 - **The set**: a **4:3** tube — the shape television was until 1998 — sunk into a
   cabinet with a speaker grille, a volume and a tuning knob, a red power lamp, a
@@ -373,82 +355,12 @@ is a reload rather than a restart.
 - **Query parameters**: `color=green|amber|white`,
   `cabinet=beige|graphite|wood`, `ducks`, `top`, `refresh`, `speed`,
   `plain=1` (no cabinet and no effects — the data alone, for a screenshot or a
-  tiling window manager), `key=` (when the server was started with `--token` — a
-  page cannot set a header on its own fetches).
+  tiling window manager).
 - **Keys**: `F` fullscreen, `C` next colour, `B` next cabinet, `E` effects on and
   off.
 - Polls `/api/board` and `/api/stats` every `refresh` seconds while the ticker
   scrolls every frame; a fresh run flashes its row and the ticker leads with
   `*** NEW RECORD ***`; with the link down the last board stays on screen, dimmed.
-
-## The console display
-
-`leaderboard/display.py` — `blessed`, full screen, hidden cursor, phosphor on
-black.
-
-```
-╔══════════════════════════════════════════════════════════════════════╗
-║                                TOP 10                                ║
-╠══════════════════════════════════════════════════════════════════════╣
-║  1. EUGENE .................   55 PTS  33 DUCKS  75%  12 TRIES 09-02 ║
-║  2. MIKE ...................   46 PTS  29 DUCKS  78%   4 TRIES 09-01 ║
-║  3. ALEXANDRA KONSTAN… .....  -35 PTS   3 DUCKS   8%   1 TRY   09-26 ║
-╚══════════════════════════════════════════════════════════════════════╝
-◀ *** NEW RECORD: EUGENE — 55 PTS ***  412 ROUNDS PLAYED  ***
-```
-
-The panel is 70 columns inside rather than the 58 it was: five numbers do not fit
-beside an 18-character name without the date falling off the end, and 72 all told
-still sits inside an 80-column terminal. Under 40 columns the compact row shows the
-score instead of the ducks — that is the number the board ranks by, and if only one
-fits it is that one.
-
-- **The running line.** One string built from `/api/stats`, `***`-separated,
-  scrolled right-to-left: render `(text * 3)[off : off + width]` and advance `off`
-  by `speed × dt`, at 20 FPS.
-- **Two clocks.** The scroll runs every frame; the API is polled on a background
-  thread every `--refresh` seconds. A slow or dead server slows nothing on screen.
-- **A fresh run arrives** (the newest `id` changed): its row flashes for five
-  seconds and the ticker leads with `*** NEW RECORD: … ***` (or `EUGENE SHOT 66 OF
-  100`) for thirty.
-- **Link down**: the last board stays on screen, dimmed, and the running line says
-  `LINK DOWN — RETRYING` with the reason. A scoreboard that goes blank because a
-  Wi-Fi packet was lost is worse than a stale one.
-- **One board, and only one**: the best round per player, best first. A panel
-  rotating through TODAY and MOST ROUNDS PLAYED was built here and came back out —
-  a screen people glance at from across the room should be showing the same thing
-  every time they glance at it. The server still answers `window=today|week` and
-  `order=attempts`, so another panel is a query away if it ever earns its place.
-- **Resize** is picked up per frame; below 40 columns it drops to a compact
-  `1.EUGENE 66` layout.
-- Flags: `--url --token --ducks --top --refresh --speed --color green|amber|white
-  --ascii --plain --bell`. `q` or Esc quits. All of them work through
-  `python3 -m leaderboard` as well, which adds `--host --port --db --ducks --log`.
-
-### The retro treatment
-
-- **Phosphor palette.** `--color green` (the P1 look), `amber` (a VT220), `white`.
-  Rows below the top three render dim, so the board fades down the list.
-- **A boot sequence** typed out a character at a time, then the screen clears to
-  the board — about 1.5 s, skipped by any key:
-  ```
-  DUCK HUNT SCOREBOARD v1.0
-  MEMORY OK ....... 64K
-  LINK http://localhost:8420 ... OK
-  LOADING BOARD ...
-  ```
-- **A blinking block cursor** `█` parked at the end of the running line.
-- **Dot leaders and uppercase**: `EUGENE ....... 55 PTS`. Names are upper-cased
-  for display only; the database keeps what was typed.
-- **Double-line box drawing**, with `--ascii` falling back to `+---+`.
-- **A block-letter `DUCK HUNT` banner** from a five-row font built into the module
-  (no `figlet` dependency), drawn when the terminal is tall enough.
-- **`--bell`** beeps on a new record. A `\a` on a high score is exactly the right
-  amount of 1983.
-- **No flicker**: the whole frame is composed into one string and written once.
-
-`--plain` turns all of it off, for when the board is a corner of a tiling window
-manager rather than a screen.
 
 ## What changed in the game
 
@@ -503,33 +415,25 @@ put them on the board rather than to throw them away for being in the old shape.
    `SENDING THE ROUND TO THE BOARD…` → `ON THE BOARD`, or `SAVED — WILL SYNC WHEN
    THE BOARD IS BACK`. Nothing when the board is off.
 7. **`[leaderboard]` in `settings.toml`** (`enabled`, `url`, `client_id`,
-   `timeout`, `token`), overridden by `DUCKHUNT_LEADERBOARD` and then by
-   `--leaderboard URL` / `--no-leaderboard`.
-8. **The ASCII frontend does not talk to the board at all**, and that is a
-   decision rather than an omission. It draws a `+` at the aim point and the arrow
-   keys move that mark, so the mark *is* the aiming, exactly as the crosshair is for
-   the mouse; it passes `crosshair=True` to every `world.update` and `refusal()`
-   turns the round away. A board where a keyboard round and a light-gun round sat in
-   the same column would not be measuring anything.
-
-   So the prompt is gone rather than unreachable: it used to ask who was shooting,
-   remember the name and post the row, and all of that was dead the moment the rule
-   applied to it. `main.py` prints the result and one line saying a keyboard round is
-   not for the board, which is the whole of its business with the leaderboard now.
-   The round is still played and still scored on screen. `--player` stays — it
-   pre-fills the pixel frontend's question.
+   `timeout`), overridden by `--leaderboard URL` / `--no-leaderboard`.
+8. **A mouse round is never a record**, and that is a decision rather than an
+   omission: a mouse has no sights to aim down, so there the crosshair *is* the
+   aiming. `refusal()` turns those rounds away and the results screen says why.
+   A board where a mouse round and a light-gun round sat in the same column
+   would not be measuring anything. The same rule retired the ASCII frontend's
+   whole conversation with the board, and then the frontend itself.
 
 ## Milestones
 
 - [x] **M1 — store + server.** Schema, validation, the five routes.
-- [x] **M2 — the console board.** The table, the running line, the poll thread, the
+- [x] **M2 — the board.** The table, the running line, the poll thread, the
       link-down state.
 - [x] **M3 — the name.** Asked after the round (not before, as this file first
       planned), the field empty and the board's own names offered under it,
       `--player` to skip the typing altogether.
 - [x] **M4 — the game talks to the board.** The client, the `[leaderboard]`
       settings, the offline queue, the one delivery line on the results screen.
-- [x] **M5 — seeding.** `leaderboard/seed.py`: import an old `scores.json`, `--demo N`.
+- [x] **M5 — seeding.** `leaderboard/seed.py`: import an old `scores.json`.
 - [ ] **M6 — autostart.** `systemd` units for the Pi / a `launchd` plist for the
       Mac, so the board comes up with the box. Blocked on the Pi existing: see
       the note under **The server** for why it buys nothing here.
@@ -544,14 +448,13 @@ put them on the board rather than to throw them away for being in the old shape.
 | `leaderboard/__main__.py` | `python3 -m leaderboard`: the server in a thread, the board in front |
 | `leaderboard/store.py` | SQLite: schema, `insert_run`, `board`, `player`, `search_players`, `stats` |
 | `leaderboard/server.py` | the HTTP server and its six routes |
-| `leaderboard/display.py` | the blessed console board with the running line |
 | `leaderboard/board.html` | the browser board: the same data as a tube TV |
-| `leaderboard/seed.py` | import an old `scores.json`, generate and clear demo rows |
+| `leaderboard/seed.py` | import an old `scores.json` |
 | `duckhunt/net/leaderboard_client.py` | POST + retries + `pending_runs.jsonl`, and `PlayerLookup` |
 | `duckhunt/core/player.py` | how much name a player may type (`NAME_MAX`) |
 | `duckhunt/frontends/pygame_app.py` | the `name` mode after the round, the names on offer, the delivery line |
 | `duckhunt/core/config.py`, `settings.toml` | the `[leaderboard]` section |
-| `main.py` | `--player`, `--mode` / `--practice`, `--leaderboard`, `--no-leaderboard` |
+| `main.py` | `--player`, `--mode`, `--leaderboard`, `--no-leaderboard` |
 | `practice.toml` | the practice round: ten slow ducks, one at a time, nothing sent |
 | `duckhunt/core/modes.py` | the rounds the title screen cycles — a mode may not touch `[leaderboard]` |
 | `docs/LEADERBOARD.md` | this file |
@@ -571,7 +474,8 @@ run happily while an evening's board is up.
   crosshair was up, and nothing arrives on the board.
 - The practice round → no name screen either, and the board is untouched by ten
   rounds of it. Worth doing by switching to it with **M** on the title screen
-  rather than with `--practice`, since that is how it is reached in an evening:
+  rather than with `--mode practice`, since that is how it is reached in an
+  evening:
   the round that follows the switch must be the practice one, and the scored
   round switched back to must still reach the name screen.
 - A round that ends on an empty magazine → the shot that emptied it counted, the last

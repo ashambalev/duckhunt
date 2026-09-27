@@ -258,13 +258,10 @@ beacon_cx = 0.5
 beacon_cy = 0.507    # the rectangle sits 0.7% of the height low
 ```
 
-**Where on the bezel, exactly?** Run `main.py --pygame --align`. In this wiring
-it lights the letterbox bars pale grey and puts **red** brackets in the four
-corners of the *screen* — so the screen's own edge is the line where the light
-stops, which is the thing to line a bundle up with (there is no other way to see
-it while the game is on). Horizontally level with the side edge of the lit area,
-vertically in the middle of the bezel, and that is the position those four
-numbers describe.
+**Where on the bezel, exactly?** Level with the screen's own edge — the line
+where the light stops, which is easiest to see with any full-white picture up —
+horizontally level with the side edge of the lit area, vertically in the middle
+of the bezel. That is the position those four numbers describe.
 
 What actually matters, in order:
 
@@ -280,16 +277,16 @@ What actually matters, in order:
 - All four in the plane of the screen, domes sanded, pointing into the play zone.
 
 Getting the numbers wrong does not break the aim, it skews it by a constant — the
-crosshair reaches the edge early, or never quite gets there. The same `--align`
-screen also draws thin **blue** brackets on the picture's corners: aim there, and
-the crosshair should sit in the angle of the bracket. Consistently high or low is
-`beacon_cy`; short of the corners in both axes is `beacon_w`/`beacon_h`.
+crosshair reaches the edge early, or never quite gets there. To check: aim at
+each corner of the picture in turn and watch where the crosshair lands.
+Consistently high or low is `beacon_cy`; short of the corners in both axes is
+`beacon_w`/`beacon_h`.
 
 **What the bezel costs is distance,** and this is the trade to understand before
 sticking anything down. The playing distance follows the size of the beacon
 rectangle, and on the bezel that rectangle is the whole screen — so it is the
-2.9 m column below on a 27", not the 2.0 m one, and `[scene] scale` cannot
-shorten it any more (the beacons no longer move with the picture). Beacons on the
+2.9 m column below on a 27", not the 2.0 m one, and nothing in software can
+shorten it (the beacons no longer move with the picture). Beacons on the
 glass at the picture's corners buy the shorter distance; beacons on the bezel buy
 a monitor with nothing stuck to its screen. Both aim exactly as well.
 
@@ -297,14 +294,13 @@ If the bezel is the only option and 2.9 m is too far, the horizontal pair can be
 moved *inwards* along the top and bottom bezel: a narrower rectangle is seen from
 closer up, down to the floor set by its height (the screen's own height is fixed,
 and ~7 x that is where the vertical field of view runs out — about 2.5 m for a
-27"). Then `[scene] scale` has to come down until the picture fits inside that
-narrower rectangle, which `--bezel` works out and tells you. Negative
-millimetres describe those inward positions.
+27"). The picture has to fit inside that narrower rectangle, which `--bezel`
+works out and tells you. Negative millimetres describe those inward positions.
 
 One direction is not allowed: a beacon rectangle **smaller** than the picture.
 The firmware clamps the aim to its own rectangle (0..1000), so aiming past a
 beacon sticks there and the picture's outer band can never be reached. `--bezel`
-checks for this and says which `[scene] scale` fixes it.
+checks for this and says so.
 
 `tools/ir_view.py` reads `[gun] frame` too, so its SCREEN panel says what it is
 showing you: the display with the ducks' rectangle inside it, or the picture
@@ -352,21 +348,16 @@ buy distance costs almost nothing in noise; what it costs is tolerance, since a
 centimetre of misplaced beacon counts for three times as much on a 40 cm
 rectangle as on a 120 cm one.
 
-**If the room cannot give you that distance, make the picture smaller.** Not the
-beacon rectangle on its own — the firmware's clamp makes an undersized rectangle
-unreachable at the edges (above) — but both together, which is one line:
+**If the room cannot give you that distance, use a smaller screen.** The
+distance follows the width of the beacon rectangle and nothing else: an 89 cm
+picture wants 4.3 m, a 49 cm one 2.3 m, a 32 cm one 1.6 m. The game itself is
+indifferent — every size and speed in it is a fraction of the picture, so the
+ducks stay exactly as big and as fast relative to whatever it is drawn on.
 
-```toml
-[scene]
-scale = 6        # display pixels per pixel of the art; 0 = as big as fits
-```
-
-Then re-stick the beacons on the smaller picture's corners. Distance scales
-straight down with it: a 4K 55" at `scale = 11` (all it will fit) is an 89 cm
-picture at 4.3 m, at `scale = 6` a 49 cm picture at 2.3 m, at `scale = 4` a 32 cm
-picture at 1.6 m. Nothing else in the game changes — every size and speed is a
-fraction of the picture, so the ducks stay exactly as big and as fast relative to
-it.
+(The game used to be able to shrink its own picture inside the screen, `[scene]
+scale`, and the beacons moved in with it. That went when the picture became a
+straight fit to the screen's height: two fits and a scale knob were three ways
+of describing one rectangle, and the room only ever needed one.)
 
 What you cannot cheat is the angle. The distance rule says the beacon rectangle
 fills ~35% of a 33° field of view, so the picture always ends up subtending about
@@ -397,9 +388,10 @@ Vf spread is a smaller share of the headroom.
    100 Ω resistor on its anode leg, cathodes twisted to one node, plus a 2×AAA holder
    with a switch. Tape each trio into a tight bundle (≤6 mm between centres), sand the
    domes, and check with a phone camera that it reads as **one** dot, not three. Clip
-   them to the corners of the game's picture: run `main.py --pygame --align` and
-   tape each bundle into the angle of its bracket — that is the whole calibration,
-   and `tools/ir_view.py --plan --diagonal 27` says beforehand how far back that
+   them to the corners of the game's picture: start the game, which prints the
+   exact rectangle it drew (`picture 1337x956 px at 66,0 of 1470x956`), and tape
+   each bundle to a corner of it — that is the whole calibration, and
+   `tools/ir_view.py --plan --diagonal 27` says beforehand how far back that
    rectangle puts you. Then run `tools/ir_view.py`: it draws the blobs the
    camera reports and the quad built from them, so you can see all four corners appear
    — and it logs the run to `logs/` for later reading. Walk to your *closest* intended
@@ -407,7 +399,7 @@ Vf spread is a smaller share of the headroom.
    splits into extra dots.
 4. **Test the aim without the gun first.** `tools/fake_gun.py` sends the bridge's
    own `x,y,b` stream over UDP, so the Mac side can be checked before any beacon is
-   stuck to anything: `main.py --pygame --udp` in one terminal,
+   stuck to anything: `main.py --udp` in one terminal,
    `tools/fake_gun.py --fire` in another. With `[gun] frame = "picture"` the
    crosshair should land exactly on the four corners of the picture and shoot
    there. Whatever is wrong at this point is in `settings.toml`, not in the

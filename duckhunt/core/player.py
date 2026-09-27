@@ -14,8 +14,8 @@ from __future__ import annotations
 
 # How much name a player may type. Generous on purpose: a name, a surname, a
 # nickname in Cyrillic, all of it. This is what is STORED — what is SHOWN is the
-# boards' business, and both of them cut a long name down to the width they have
-# (see NAME_W in leaderboard/display.py and .name in leaderboard/board.html). It
+# board's business, and it cuts a long name down to the width it has (see .name
+# in leaderboard/board.html). It
 # lives here, next to the name itself, now that the local score table it used to
 # belong to is gone; `leaderboard.store.NAME_MAX` is the same number on the
 # server's side of the wire.

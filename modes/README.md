@@ -34,7 +34,8 @@ is being played, and â€” since the title screen switches modes between rounds â€
 several of them could not follow a mode anyway: a window does not change size,
 and a sight-in does not get re-measured, between two pulls of the trigger.
 
-It is also the old safety of `--practice`, written down rather than remembered: a
+It is also the old safety of `--mode practice`, written down rather than
+remembered: a
 mode file that could replace the sight-in and the beacon rectangle would hand a
 first-timer the one gun in the house that is not aimed at anything.
 

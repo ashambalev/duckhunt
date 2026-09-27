@@ -9,7 +9,7 @@ taped up, and a known aim point instead of a shaking hand.
 
 Two terminals. The game:
 
-    .venv/bin/python main.py --pygame --udp
+    .venv/bin/python main.py --udp
 
 and then the gun:
 

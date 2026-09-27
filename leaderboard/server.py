@@ -13,7 +13,6 @@ The terminal it runs in is the audit trail: one line per accepted run.
 from __future__ import annotations
 
 import argparse
-import hmac
 import json
 import os
 import re
@@ -33,7 +32,6 @@ MAX_BODY = 8192
 # record shout for good, on a port this file's own docstring calls open on the LAN.
 # 100 a duck is roughly fifty times the real rate and still stops that dead.
 MAX_POINTS_PER_DUCK = 100          # a round result is ~400 bytes; anything larger is junk
-TOKEN_HEADER = "X-Duckhunt-Key"
 PAGE_NAME = "board.html"  # the browser board, served at /
 
 # Where the per-run lines go. None means the terminal, which is what you want
@@ -134,7 +132,6 @@ def validate(body: dict) -> dict:
 class Handler(BaseHTTPRequestHandler):
     server_version = "duckhunt-leaderboard/1.0"
     db_path: str = ""
-    token: str = ""
 
     # ---- plumbing ----
 
@@ -152,15 +149,6 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):
             pass      # the display walked away mid-answer; not our problem
-
-    def _check_token(self, given: str = "") -> None:
-        if not self.token:
-            return
-        # the header is how the game sends it; `?key=` is for the browser board,
-        # which is a page and cannot set one on its own fetches
-        given = given or self.headers.get(TOKEN_HEADER, "")
-        if not hmac.compare_digest(given, self.token):
-            raise Rejected("bad or missing key", 403)
 
     def _send_page(self) -> None:
         """The browser board — read from disk each time, so tuning how it looks
@@ -213,7 +201,6 @@ class Handler(BaseHTTPRequestHandler):
                 # are checked like any other
                 self._send_page()
                 return
-            self._check_token(q.get("key", [""])[0])
             ducks = num("ducks", 100)
             with store.connect(self.db_path) as conn:
                 if url.path == "/api/board":
@@ -251,7 +238,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path != "/api/runs":
                 raise Rejected("no such route", 404)
-            self._check_token()
             run = validate(self._body())
             with store.connect(self.db_path) as conn:
                 result = store.insert_run(conn, run)
@@ -271,10 +257,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "server error"}, 500)
 
 
-def build(host: str, port: int, db: str, token: str = "") -> ThreadingHTTPServer:
+def build(host: str, port: int, db: str) -> ThreadingHTTPServer:
     """A server ready to be served — in this process or in a thread of its own."""
     store.init(db)
-    Handler.db_path, Handler.token = db, token
+    Handler.db_path = db
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
     return httpd
@@ -287,9 +273,6 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--port", type=int, default=8420)
     ap.add_argument("--db", default=store.default_path(),
                     help="SQLite file (leaderboard.db in the project root)")
-    ap.add_argument("--token", default="",
-                    help="shared secret the game must send in "
-                         f"{TOKEN_HEADER} — off by default (home LAN)")
     ap.add_argument("--log", metavar="FILE",
                     help="write the per-run lines to a file instead of here")
     args = ap.parse_args(argv)
@@ -297,10 +280,9 @@ def main(argv: list[str] | None = None) -> None:
     global log_stream
     if args.log:
         log_stream = open(args.log, "a", encoding="utf-8")
-    httpd = build(args.host, args.port, args.db, args.token)
+    httpd = build(args.host, args.port, args.db)
     print(f"leaderboard on http://{args.host}:{args.port}  db={args.db}"
-          f"\nthe board in a browser: http://localhost:{args.port}/"
-          f"{'  (token required)' if args.token else ''}\n"
+          f"\nthe board in a browser: http://localhost:{args.port}/\n"
           f"one line per accepted run follows; Ctrl-C stops it", flush=True)
     try:
         httpd.serve_forever()

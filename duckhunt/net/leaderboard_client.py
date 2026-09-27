@@ -28,7 +28,6 @@ from ..core import player
 
 PENDING_NAME = "pending_runs.jsonl"
 BACKOFF = (0.5, 1.0, 2.0)          # three tries, then the queue on disk
-TOKEN_HEADER = "X-Duckhunt-Key"
 
 # The name lookup is the one thing here that happens while somebody is waiting
 # at a screen, so it has its own two numbers: how long a burst of typing has to
@@ -229,8 +228,6 @@ class LeaderboardClient:
         req = urllib.request.Request(
             self.settings.url.rstrip("/") + "/api/runs", data=data,
             headers={"Content-Type": "application/json"})
-        if self.settings.token:
-            req.add_header(TOKEN_HEADER, self.settings.token)
         with urllib.request.urlopen(req, timeout=self.settings.timeout) as r:
             return json.loads(r.read().decode("utf-8"))
 
@@ -391,8 +388,6 @@ class PlayerLookup:
         query = urllib.parse.urlencode({"q": text, "limit": self.limit})
         req = urllib.request.Request(
             f"{self.settings.url.rstrip('/')}/api/players?{query}")
-        if self.settings.token:
-            req.add_header(TOKEN_HEADER, self.settings.token)
         timeout = min(self.settings.timeout, LOOKUP_TIMEOUT)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
