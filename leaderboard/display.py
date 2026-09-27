@@ -2,12 +2,13 @@
 
     python3 -m leaderboard.display --url http://raspberrypi.local:8420
 
-    ╔══════════════════════════════════════════════════════╗
-    ║             D U C K   H U N T   —   T O P  10         ║
-    ╠══════════════════════════════════════════════════════╣
-    ║   1. EUGENE ......... 66 DUCKS   66%   12 TRIES 09-02 ║
-    ╚══════════════════════════════════════════════════════╝
-    ◀ *** NEW RECORD: EUGENE — 66 DUCKS *** 412 ROUNDS PLAYED ***
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║                          DUCK HUNT — TOP 10                          ║
+    ╠══════════════════════════════════════════════════════════════════════╣
+    ║  1. EUGENE .................  112 PTS  66 DUCKS  66%  12 TRIES 09-02 ║
+    ║  2. MIKE ...................   84 PTS  57 DUCKS  66%   4 TRIES 09-01 ║
+    ╚══════════════════════════════════════════════════════════════════════╝
+    ◀ *** NEW RECORD: EUGENE — 112 PTS ***  412 ROUNDS PLAYED
 
 Two clocks, on purpose: the running line scrolls every frame (~20 FPS) while the
 API is polled on a background thread every couple of seconds. A slow or dead
@@ -31,10 +32,17 @@ from urllib.parse import quote
 
 from blessed import Terminal
 
-# Names are stored long (scores.NAME_MAX is 50) and shown short: a board is a
+# Names are stored long (`player.NAME_MAX` / `store.NAME_MAX` is 50) and shown
+# short: a board is a
 # column of numbers people read from across the room, and one 50-character name
 # would leave no room for what it scored.
 NAME_W = 18
+
+# The panel's inner width. It grew by twelve columns when the score arrived: the
+# row carries a name and five numbers now where 58 columns fitted four, and the
+# score is the widest-swinging of them (a magazine emptied at the dog reaches
+# three digits and a minus sign). Still well inside 80, which every terminal is.
+PANEL_W = 70
 
 FPS = 20
 FLASH_SECONDS = 5.0        # how long a freshly arrived row stays lit
@@ -154,7 +162,10 @@ def ticker_text(stats: dict, up: bool, error: str, shout: str) -> str:
                      "LINK DOWN — RETRYING")
     record = stats.get("record")
     if record:
-        parts.append(f"RECORD: {record['name'].upper()} {record['hits']} DUCKS")
+        # points first: the record is the best score now, so a line that said
+        # only how many ducks it caught would be naming the wrong number
+        parts.append(f"RECORD: {record['name'].upper()} {record['score']} PTS "
+                     f"— {record['hits']} DUCKS")
     if stats.get("rounds"):
         def many(n, one, more):
             return f"{n} {one if n == 1 else more}"
@@ -172,13 +183,28 @@ def row_text(i: int, row: dict, width: int, compact: bool, ascii_only: bool = Fa
     name = row["name"].upper()
     cut = "~" if ascii_only else "…"
     name = name if len(name) <= NAME_W else name[:NAME_W - 1] + cut
+    # the score, not the ducks: when only one number fits, it is the one the board
+    # is ranked by
+    short = f"{i}.{name} {row['score']}"[:width]
     if compact:
-        return f"{i}.{name} {row['hits']}"[:width]
+        return short
     # padded, so one player's single try does not shift the dot leaders
     tries = ("TRY" if row["attempts"] == 1 else "TRIES").ljust(5)
-    right = (f"{row['hits']:>3} DUCKS {row['accuracy']:>3.0f}% "
+    # The score leads, because it is what the rows are ordered by and a column
+    # people read down has to be the column the order is in. Four characters
+    # wide: a round that went badly is a negative number, and the minus sign
+    # needs a column of its own or the digits walk left out of line.
+    right = (f"{row['score']:>4} PTS {row['hits']:>3} DUCKS "
+             f"{row['accuracy']:>3.0f}% "
              f"{row['attempts']:>3} {tries} {row['finished_at'][5:10]}")
     left = f"{i:>2}. {name} "
+    if len(left) + len(right) + 2 > width:
+        # Narrower than the full row needs. `[:width]` would cut the END off,
+        # which is the date and then the try count mid-word — so fall back to the
+        # short row rather than print a field chopped in half. The caller's own
+        # `compact` threshold is about the header; this is about this row, and the
+        # row is what knows whether it fits.
+        return short
     dots = max(1, width - len(left) - len(right) - 1)
     return f"{left}{'.' * dots} {right}"[:width]
 
@@ -273,12 +299,13 @@ def main(argv: list[str] | None = None) -> None:
                     flash_key, flash_t = (latest["name"].casefold(), 0.0)
                     if latest.get("is_record"):
                         shout = (f"*** NEW RECORD: {latest['name'].upper()} — "
-                                 f"{latest['hits']} DUCKS ***")
+                                 f"{latest['score']} PTS ***")
                         if args.bell:
                             print("\a", end="", flush=True)
                     else:
                         shout = (f"{latest['name'].upper()} SHOT "
-                                 f"{latest['hits']} OF {stats.get('ducks', '')}")
+                                 f"{latest['hits']} OF {stats.get('ducks', '')} "
+                                 f"FOR {latest['score']} PTS")
                     shout_t = 0.0
                 last_id = latest.get("id")
             if flash_key is not None:
@@ -306,7 +333,7 @@ def main(argv: list[str] | None = None) -> None:
 
             # ---- the panel ----
             title = f"TOP {args.top}"
-            inner = min(w - 2, 58 if not compact else w - 2)
+            inner = min(w - 2, PANEL_W if not compact else w - 2)
             pad = max(0, (w - inner - 2) // 2)
             head = " " * pad + box["tl"] + box["h"] * inner + box["tr"]
             lines.append((head, bright if up else dim))

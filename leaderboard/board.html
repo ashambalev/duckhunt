@@ -165,8 +165,16 @@
     border-bottom: calc(var(--H) * 0.005) dotted currentColor;
     opacity: 0.35; transform: translateY(-0.35em);
   }
+  /* The score is the bright column, because it is the one the rows are ordered
+     by; the ducks moved in beside the accuracy when a duck stopped being the
+     score. Four characters, the width the console board sets it in too: a round
+     that went badly is negative, and the minus sign gets a column of its own
+     rather than pushing the digits out of line. */
+  .row .score { width: 4ch; text-align: right; }
   .row .hits { width: 4ch; text-align: right; }
-  .row .unit, .row .acc, .row .tries, .row .when { color: var(--fg-dim); }
+  .row .unit, .row .hits, .row .acc, .row .tries, .row .when {
+    color: var(--fg-dim);
+  }
   .row .acc { width: 5ch; text-align: right; }
   .row .tries { width: 9ch; text-align: right; }
   .row .when { width: 7ch; text-align: right; }
@@ -414,8 +422,9 @@
       flashName = (latest.name || "").toLowerCase();
       flashAt = Date.now();
       shout = latest.is_record
-        ? `*** NEW RECORD: ${latest.name.toUpperCase()} — ${latest.hits} DUCKS ***`
-        : `${latest.name.toUpperCase()} SHOT ${latest.hits} OF ${stats.ducks}`;
+        ? `*** NEW RECORD: ${latest.name.toUpperCase()} — ${latest.score} PTS ***`
+        : `${latest.name.toUpperCase()} SHOT ${latest.hits} OF ${stats.ducks}` +
+          ` FOR ${latest.score} PTS`;
       shoutAt = Date.now();
     }
     lastId = latest.id;
@@ -426,7 +435,10 @@
     if (shout && Date.now() - shoutAt < SHOUT_MS) parts.push(shout);
     if (!up) parts.push(`LINK DOWN — RETRYING${error ? ` (${error})` : ""}`);
     if (stats.record)
-      parts.push(`RECORD: ${stats.record.name.toUpperCase()} ${stats.record.hits} DUCKS`);
+      // points first: the record is the best score now, so naming only the
+      // ducks it caught would be naming the wrong number
+      parts.push(`RECORD: ${stats.record.name.toUpperCase()} ` +
+                 `${stats.record.score} PTS — ${stats.record.hits} DUCKS`);
     if (stats.rounds) {
       const many = (n, one, more) => `${n} ${n === 1 ? one : more}`;
       parts.push(many(stats.rounds, "ROUND PLAYED", "ROUNDS PLAYED"));
@@ -484,6 +496,7 @@
     return `<span class="rank">${rank}</span>` +
       `<span class="name">${escape(r.name.toUpperCase())}</span>` +
       `<span class="dots"></span>` +
+      `<span class="score">${r.score}</span><span class="unit"> PTS</span>` +
       `<span class="hits">${r.hits}</span><span class="unit"> DUCKS</span>` +
       `<span class="acc">${Math.round(r.accuracy)}%</span>` +
       `<span class="tries">${tries}</span>` +

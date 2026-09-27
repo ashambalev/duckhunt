@@ -1,0 +1,36 @@
+# 🦆 Practice — for handing the gun to someone who has never held one
+#
+#     python3 main.py --pygame --practice --serial /dev/tty.usbserial-0001
+#
+# This file is laid **over** settings.toml, not instead of it: it says the four
+# things that make a round practice and inherits every other value, the hardware
+# block included. That is the whole safety of it — the sight-in, the beacon
+# rectangle and the lead were measured on one gun, on one screen, over three
+# evenings, and a mode file that replaced them would hand the beginner the one gun
+# in the house that is not aimed at anything.
+#
+# So: short, slow, unscored, and only one duck in the air — which is the one thing
+# in here that is a mechanic rather than a number.
+
+[round]
+ducks = 10            # ten, not forty: a first round should end while it is still fun
+interval = 1.6        # the longest they ever wait — with one duck at a time the
+                      # next one goes up as soon as the sky clears, so this is the
+                      # pace only while a duck is still being dealt with quickly
+ammo = 0              # unlimited: counting shots is the last thing a beginner needs
+scored = false        # never offered to the leaderboard, so nothing here is a record
+
+[duck]
+max_alive = 1         # one duck, in the air, until it is dealt with
+speed_min = 0.18      # half the scored round's speed: a duck to track, not to snap at
+speed_max = 0.30
+
+[gun]
+# The crosshair is on: somebody who has never held the gun should see where it is
+# pointing before being asked to trust a front sight. It costs nothing here —
+# a practice round was never going to the board anyway.
+crosshair = "on"
+
+# The score still works: the HUD counts and the results screen says what the round
+# came to. It is simply never sent anywhere. The numbers themselves come from
+# settings.toml, like everything else not named above.

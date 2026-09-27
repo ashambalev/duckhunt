@@ -2,10 +2,15 @@
 __pycache__/
 *.py[cod]
 
+# pytest's scratch
+.pytest_cache/
+
 # Virtual environment
 .venv/
 
-# Local high scores (per-machine, not shared)
+# The old local high-score table. Nothing writes it any more; an existing one is
+# still ignored here because it is per-machine, and `leaderboard.seed
+# --from-scores` can still put those evenings on the board.
 scores.json
 
 # The sight correction: measured on one gun, one screen, one way of holding it

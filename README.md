@@ -39,9 +39,11 @@ line, so the macOS Bluetooth stack is never involved. The remote stays intact.
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-dev.txt        # only to run the tests
 
 python3 main.py --pygame                                     # aim with the mouse (development)
 python3 main.py --pygame --serial /dev/tty.usbserial-0001    # aim with the light gun
+python3 main.py --pygame --serial /dev/tty.usbserial-0001 --practice   # ... for a first-timer
 ```
 
 **Playing with the light gun**, start to finish:
@@ -148,7 +150,11 @@ puts that HUD up while it does (the difference is a feel, and a feel does not
 survive the minute it takes to restart the game and get the remote back),
 **F1** sights the gun in on five targets (from the title screen or the score
 table) and **F2** turns that correction on and off so it can be judged rather
-than assumed, **Space** or the trigger leaves the results screen, **Q** quits.
+than assumed — `--no-calibration` is the same thing decided at startup, and the
+difference matters: F2 toggles a correction that was *loaded*, while
+`--no-calibration` means `calibration.json` is never read at all, which is the one
+to reach for when you suspect the file itself — **Space** or the trigger leaves the
+results screen, **Q** quits.
 `--align` starts with those
 targets up, and what it draws follows `[gun] frame`: with `"picture"`, brackets in
 the picture's four corners to tape a bundle into; with `"display"`, the letterbox
@@ -571,8 +577,7 @@ the gun comes out:
 | `python3 main.py --pygame` | mouse — no hardware, for development |
 | `python3 main.py --pygame --serial PORT` | **the current gun**: Wiimote → ESP32-WROOM-32U → USB-Serial |
 | `python3 main.py --pygame --udp` | the same bridge over Wi-Fi/UDP (port 4210) — the Mac side (`input/udp_gun.py`) is ready, the firmware sends serial today |
-| `python3 main.py --pygame --wiimote` | remote straight over Bluetooth (`hidapi`) — does *not* work on recent macOS, kept for reference |
-| `python3 main.py` | the ASCII/terminal frontend — the original prototype, same core, handy without a window |
+| `python3 main.py` | the ASCII/terminal frontend — the original prototype, same core, handy without a window. Its rounds never reach the board and it does not ask who was shooting: the `+` it draws is the aiming, so a keyboard round is not the game the board measures |
 
 The last one is a leftover from the first prototype rather than the goal; every
 input source works with either frontend, since both sit on the same `World` and
@@ -597,9 +602,38 @@ the same `InputSource`.
 
 ## How a game goes
 
-A round is **100 ducks in about a minute**. The ducks launch at a steady pace (a
-0.6 s pause) and cross the screen quickly; ammunition is not counted. However many
-you down is your score.
+There are **two rounds**, and they are two settings files over the same game
+rather than two code paths.
+
+**The scored round** — `settings.toml`, what you get by default — is **40 ducks and
+40 shots**, launched at a steady pace (a 0.9 s pause) and crossing the screen
+quickly. It ends when the ducks run out *or* the magazine does, whichever comes
+first: the shot that empties it still counts, and a duck already falling still
+lands. Firing costs something, which is the whole point of counting shots:
+
+| | |
+|---|---|
+| a duck downed | **+2** |
+| a shot that hit nothing | **−1** |
+| a shot that hit the dog | **−5** |
+
+The score can go below zero and is shown below zero — clamping it at nothing would
+only hide that the round went badly. Counting the ducks alone made every shot free,
+and the best strategy was to hold the trigger down.
+
+**The practice round** — `--practice`, which is nothing but `--settings
+practice.toml` — is for handing the gun to someone who has never held one: **ten
+ducks, slow, one in the air at a time**, unlimited ammunition, the crosshair on,
+and nothing sent to the board. One duck at a time is the only genuinely different
+mechanic in it (`[duck] max_alive = 1`); everything else is a smaller number.
+
+**A scored round is shot down the sights.** `[gun] crosshair` decides whether the
+crosshair is drawn when the round starts — `"auto"` (the default) means off with a
+gun plugged in and on for the mouse, which has no front sight to aim down. **C**
+(or **A** on the remote) still flips it mid-round, and a round that had it up at
+any point is still played and still scored on screen, it is simply never offered to
+the leaderboard, and the results screen says which of the two reasons applies.
+Turning it back off before the last duck does not buy the record back.
 
 The ducks fly in the top `[duck] sky` of the picture (90 % by default) and the
 dog keeps to the bottom `[dog] band` (20 %), so neither gets in the other's way.
@@ -617,6 +651,26 @@ typed is offered pre-filled, so an evening of rounds is one keypress a time; the
 first character typed replaces it, so nobody has to backspace someone else's name
 out. After that **Space** or the trigger goes back to the title screen, where
 another pull starts the next round, and **Q** quits.
+
+**Under the field are the names already on the board**, searched as you type:
+`ALREADY ON THE BOARD: ЖЕНЯ — 31/40 (12 tries)`. **Tab**, **↓** or **the trigger**
+takes the next one, **↑** goes back up the list and off it to what you typed, and
+**Enter** — or **A on the remote** — sends whatever is in the field, a name nobody
+has used yet included. Trigger to pick, **A** to send: a player standing three
+metres away with both hands on the gun signs their round without walking to the
+keyboard, which is exactly how the fourth spelling of their name used to get on
+the board. A name the board has never seen still needs the keyboard, and that is
+what shoot-the-letters entry is for if it ever earns itself. The search
+is blind to case and to accents, so `женя`, `ЖЕНЯ` and `Женя` all find the same
+row, and it looks across every round size — a name is a name whatever length of
+round it was first typed in, which is why the score next to it says `31/40` rather
+than a bare number. **Taking a name off the list overwrites nothing**: every
+attempt has always been its own row and the board shows the best one per player,
+so signing a bad round under your own name moves the `tries` count and leaves your
+best exactly where it was. The screen says so in as many words, because the list
+looks like it does the opposite. With the board off or unreachable there is no
+list and nothing waits for it: the screen is what it was before — type a name,
+press Enter.
 
 **The board itself is a screen of its own** and the game draws none of it — no
 ranks, no other players, no table, just a line saying the round got there. It is
@@ -646,16 +700,20 @@ and either can still be started on its own —
 which is what you want when the board lives on a box of its own.
 
 The server keeps **every** attempt in SQLite and the board shows the best run per
-player (`66 DUCKS · 66% · 12 TRIES`), with a running line of records and totals
+player (`55 PTS · 33 DUCKS · 75% · 12 TRIES`), with a running line of records and
+totals
 scrolling along the bottom. A round played with the server down waits in
 `pending_runs.jsonl` and lands on the board the next time the game starts. The
 permanent switch is `[leaderboard] enabled = true` in `settings.toml`; the whole
 thing is described in [`docs/LEADERBOARD.md`](docs/LEADERBOARD.md).
 
-`scores.json` in the project root is still written as it always was — a
-per-machine mirror of the ten best rounds, and what still works with no server
-anywhere. It is simply not shown any more, in the game or on exit. On a tied
-score, whoever spent fewer shots ranks higher.
+**`scores.json` is no longer written.** It was a top ten on one machine, invisible
+to anyone not sitting at it, and it kept being written for a while after nothing
+read it back — which is not a fallback, it is a file. A round played with the board
+down is not lost either way: it goes to `pending_runs.jsonl` and arrives when the
+board is back. An old `scores.json` still in your project root is not wasted
+though — `python3 -m leaderboard.seed --from-scores` puts those evenings on the
+board, scored by the rule they were played under.
 
 Every shot is heard: the bang of the gun, a quack where it connected, and the dog
 laughing at whatever flew off unharmed ([Sound](#sound) below — `[sound] enabled =
@@ -672,11 +730,17 @@ the project root — with comments there explaining what each value means:
 
 ```toml
 [round]
-ducks = 100           # how many ducks in a round
-interval = 0.6        # pause between launches: round length ≈ ducks × interval
-points = 1            # points per duck
+ducks = 40            # how many ducks in a round
+interval = 0.9        # pause between launches: round length ≈ ducks × interval
+ammo = 40             # shots in the magazine; 0 = unlimited (what practice.toml uses)
+scored = true         # false = never offered to the leaderboard
 speedup = 1.0         # 1.0 — a steady pace; less — the round speeds up towards the end
 countdown = 3.0       # seconds from the trigger pull on the title screen to the first duck
+
+[score]
+duck = 2              # a duck downed
+miss = -1             # a shot that hit nothing
+dog = -5              # a shot that hit the dog
 
 [duck]
 width = 0.13          # duck width, fraction of screen width (both hitbox and sprite)
@@ -684,6 +748,7 @@ height = 0.16
 speed_min = 0.30      # speed: fraction of screen per second, random per duck
 speed_max = 0.55
 sky = 0.90            # ducks keep to the top 90 % — the grass below is the dog's
+max_alive = 0         # 0 = as many as the pace launches; 1 = one duck at a time
 
 [dog]
 width = 0.12          # dog size, fraction of screen width
@@ -696,9 +761,13 @@ values in effect on a single line at startup, so you can see which file was pick
 up:
 
 ```
-Settings: 100 ducks, one every 0.6 s (≈60 s round) · size 0.13×0.16 ·
-speed 0.3–0.55 · background meadow, fullscreen
+Settings: 40 ducks, one every 0.9 s (≈36 s round) · 40 shots · size 0.13×0.16 ·
+speed 0.3–0.65 · background meadow, fullscreen
 ```
+
+A practice round says so on the same line: `unlimited ammunition, 1 at a time,
+practice (not for the board)`. `[round] points` from before the score had parts is
+still read, as `[score] duck`, with a note asking you to move it.
 
 The scene is set there too:
 
@@ -845,17 +914,17 @@ and plays on in silence, the mixer handed back.
 | `duckhunt/core/models.py` | data: `Duck`, `Facing`, `DuckState` (coordinates 0..1, no sprites) |
 | `duckhunt/core/world.py` | **the pure logic core**: `World.update()`, spawning, physics, score |
 | `duckhunt/core/config.py` | reading `settings.toml`: duck size and speed, spawn rate |
-| `duckhunt/core/scores.py` | the high-score table (`scores.json`) |
 | `duckhunt/core/calibration.py` | the sight correction: fitting it, `calibration.json`, and applying it |
 | `duckhunt/frontends/calibrate.py` | the five-target sighting-in screen (**F1**, `--calibrate`) |
 | `settings.toml` | the settings themselves — edit these, no need to touch the code |
+| `practice.toml` | the practice round, laid **over** `settings.toml` so the gun keeps its sight-in |
+| `tests/` | `pytest`: the board's queries and routes, the two rounds' arithmetic, the name screen driven headlessly |
 | `duckhunt/frontends/pygame_app.py` | **the pixel frontend**: sprites, backgrounds, dog, crosshair |
 | `duckhunt/frontends/terminal.py` | the ASCII frontend (the original prototype) |
 | `duckhunt/sound.py` | the three sounds: loading them, the `[sound]` volumes, playing one |
 | `duckhunt/input/base.py` | the input interface `InputSource` → `AimState(x, y, fire)` |
 | `duckhunt/input/serial_gun.py` | input from the ESP32 over USB-Serial (the `x,y,b\n` protocol) |
 | `duckhunt/input/udp_gun.py` | the same protocol over Wi-Fi/UDP |
-| `duckhunt/input/wiimote.py` | the remote straight over Bluetooth (reference, macOS-broken) |
 | `duckhunt/input/keyboard.py` | keyboard input (for development without hardware) |
 | `firmware/esp32_wiimote_bridge/` | **the current firmware**: ESP32-WROOM-32U ↔ Wii Remote → serial |
 | `firmware/libs/Wiimote/` | the `Wiimote` library plus the Duck Hunt patch (`enable_ir`) |
@@ -868,12 +937,12 @@ and plays on in silence, the mixer handed back.
 | `tools/fake_gun.py` | the gun's UDP stream without the gun — testing the aim, the crosshair and the hits from a known aim point |
 | `docs/BUILD.md` | BOM, wiring and assembly of the hardware |
 | `docs/TODO.md` | what is left to do on the gun and the game, most useful first |
-| `leaderboard/server.py` | the leaderboard's HTTP server: five routes over one SQLite file |
+| `leaderboard/server.py` | the leaderboard's HTTP server: six routes over one SQLite file |
 | `leaderboard/store.py` | the SQL behind it — every attempt kept, best run per player queried |
 | `leaderboard/display.py` | the console board: the same scoreboard in a terminal |
 | `leaderboard/board.html` | the browser board for the second screen — a tube TV, rolling band and all |
 | `leaderboard/__main__.py` | `python3 -m leaderboard`: server plus a board, one command |
-| `leaderboard/seed.py` | filling the board from `scores.json`, or with demo rounds |
+| `leaderboard/seed.py` | filling the board from an old `scores.json`, or with demo rounds |
 | `duckhunt/net/leaderboard_client.py` | the game's side: post the round, queue it when the board is off |
 | `docs/LEADERBOARD.md` | the leaderboard server, its console board and how they are run |
 

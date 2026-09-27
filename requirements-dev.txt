@@ -1,0 +1,7 @@
+# What the tests need, on top of requirements.txt. Kept apart because the README
+# tells the box under the television to install requirements.txt, and a scoreboard
+# host has no business carrying a test runner.
+#
+#     .venv/bin/pip install -r requirements-dev.txt
+#     .venv/bin/python -m pytest tests/ -q
+pytest>=8

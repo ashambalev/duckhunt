@@ -11,17 +11,26 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import os
 import random
+import sys
 from datetime import datetime, timedelta, timezone
 
-from duckhunt.core import scores
+from duckhunt.core.config import ScoreSettings
 
 from . import store
+
+# What a shot is worth, for working out what a demo round scored. The dataclass
+# defaults rather than a loaded settings.toml on purpose: seeding a board on a
+# box with no game on it must not depend on a file that is not there, and the
+# demo rows only have to be coherent with each other.
+POINTS = ScoreSettings()
 
 # Invented players for --demo, each with the share of the flock they usually
 # down and roughly how straight they shoot. Names and surnames, because a board
 # of bare first names does not show what the column really looks like on a night
-# when three Annas have played. All within scores.NAME_MAX.
+# when three Annas have played. All within store.NAME_MAX.
 DEMO_PLAYERS = [
     # name,               skill, accuracy, how often they play
     ("EVGENY CHERNYAK",   0.82, 0.74, 9),
@@ -49,13 +58,65 @@ def _uuid_for(*parts) -> str:
     return hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:32]
 
 
+SCORES_NAME = "scores.json"
+
+
+def scores_path() -> str:
+    """`scores.json` in the project root, where the game used to keep its ten."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(here, "..", SCORES_NAME)
+
+
+def read_scores(path: str | None = None) -> list[dict]:
+    """The old local table, straight off disk.
+
+    The module that wrote this file is gone — a top ten on one machine that
+    nothing read back out, once the board next door was keeping every attempt by
+    everybody. The *reader* outlives it on purpose: an old `scores.json` in
+    somebody's project root is a handful of real evenings, and the whole point of
+    `--from-scores` is that they are not thrown away for being in the old shape.
+    Anything malformed is skipped rather than fatal — half an import beats none.
+    """
+    path = path or scores_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError) as exc:
+        print(f"{SCORES_NAME}: could not be read ({exc}) — nothing imported",
+              file=sys.stderr)
+        return []
+    rows = []
+    for r in raw if isinstance(raw, list) else []:
+        try:
+            rows.append({"name": str(r["name"]), "hits": int(r["hits"]),
+                         "shots": int(r["shots"]), "ducks": int(r["ducks"]),
+                         "date": str(r["date"])})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return rows
+
+
 def from_scores(conn, path: str | None = None) -> int:
-    """The local top ten becomes the first rows of the board."""
+    """The local top ten becomes the first rows of the board.
+
+    `scores.json` has no score in it, because those rounds were played when a
+    duck was worth one point and neither a miss nor the dog cost anything — so
+    the hit count IS the score of such a round, the same arithmetic the migration
+    in `store._migrate` does for the rows already in the database. Not a guess:
+    it is the old rule applied to rows played under it. `dog_hits` stays 0 for
+    the same reason — nothing counted the dog then — and so does `crosshair`,
+    which those rounds never recorded either way.
+    """
     added = 0
-    for e in scores.load(path):
-        when = f"{e.date}T20:00:00+00:00"
-        run = {"run_uuid": _uuid_for("scores", e.name, e.hits, e.shots, e.ducks, e.date),
-               "name": e.name, "hits": e.hits, "shots": e.shots, "ducks": e.ducks,
+    for e in read_scores(path):
+        when = f"{e['date']}T20:00:00+00:00"
+        run = {"run_uuid": _uuid_for("scores", e["name"], e["hits"], e["shots"],
+                                     e["ducks"], e["date"]),
+               "name": e["name"], "hits": e["hits"], "shots": e["shots"],
+               "ducks": e["ducks"],
+               "score": e["hits"], "dog_hits": 0, "crosshair": 0,
                "duration": 0.0, "started_at": when, "finished_at": when,
                "client_id": "scores.json", "input_source": None,
                "game_version": None, "settings": None}
@@ -72,6 +133,13 @@ def demo(conn, count: int, ducks: int) -> int:
     has an unusually good night once, and the board ends up with the shape it
     will really have — a few close at the top, a long tail, and somebody who has
     played eleven times to get there.
+
+    The score is not invented beside the shooting but worked out from it, with
+    the game's own arithmetic over the hits, the misses and the dog: a demo row
+    claiming 140 points next to 20 ducks would make a board that is being tested
+    look broken. It also means a sloppy demo player goes negative here exactly
+    the way a sloppy real one does, which is the case both boards have to be
+    looked at with.
     """
     rng = random.Random(20260926)
     now = datetime.now(timezone.utc)
@@ -90,12 +158,21 @@ def demo(conn, count: int, ducks: int) -> int:
         hits = max(1, min(ducks, round(ducks * max(0.05, min(0.99, form)))))
         accuracy = max(0.18, min(0.97, rng.gauss(aim, 0.06)))
         shots = max(hits, round(hits / accuracy))
+        # the dog walks in front of the grass and gets shot occasionally — never
+        # more times than there were shots left over after the ducks
+        dog_hits = min(shots - hits, rng.choices([0, 1, 2], [7, 2, 1])[0])
+        score = (POINTS.duck * hits + POINTS.dog * dog_hits
+                 + POINTS.miss * (shots - hits - dog_hits))
         # spread over the last fortnight, evenings, with some of it tonight
         when = now - timedelta(days=rng.triangular(0, 14, 1),
                                minutes=rng.randint(0, 240))
         store.insert_run(conn, {
             "run_uuid": _uuid_for("demo", i, name, hits, shots),
             "name": name, "hits": hits, "shots": shots, "ducks": ducks,
+            "score": score, "dog_hits": dog_hits,
+            # some of the evening was shot with the crosshair on and some without,
+            # because the column exists for telling those apart one day
+            "crosshair": rng.random() < 0.4,
             "duration": round(rng.uniform(52, 78), 1),
             "started_at": (when - timedelta(seconds=65)).isoformat(),
             "finished_at": when.isoformat(),
@@ -143,8 +220,9 @@ def main(argv: list[str] | None = None) -> None:
         rows = store.board(conn, args.ducks, 10)
     for i, r in enumerate(rows, 1):
         tries = "try" if r["attempts"] == 1 else "tries"
-        print(f"  {i:>2}. {r['name'][:20]:<20} {r['hits']:>3} ducks  "
-              f"{r['accuracy']:>3.0f}%  {r['attempts']:>3} {tries}")
+        print(f"  {i:>2}. {r['name'][:20]:<20} {r['score']:>5} pts  "
+              f"{r['hits']:>3} ducks  {r['accuracy']:>3.0f}%  "
+              f"{r['attempts']:>3} {tries}")
 
 
 if __name__ == "__main__":

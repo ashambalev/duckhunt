@@ -4,6 +4,14 @@ Every frame the frontend calls `world.update(dt, aim_x, aim_y, fire)` and then
 reads `world.ducks`, `world.score` and so on to draw the scene however it likes
 (ASCII, sprites, 3D — makes no difference). The core is deterministic for a given
 seed, which is handy for tests.
+
+Firing costs something now, which is what the score is about: a duck is worth
+`[score] duck`, a shot that hits nothing `[score] miss`, and the dog `[score]
+dog`. The magazine (`[round] ammo`) is the other half of it — with free shots the
+best strategy was to hold the trigger down. The dog is the one thing the core
+cannot see for itself: he is drawn by the frontend, so the frontend hands his box
+to `update()` while he is up, and the shot is then decided where every other shot
+is decided.
 """
 
 from __future__ import annotations
@@ -20,6 +28,12 @@ from .models import Duck, DuckState, Facing
 # in settings.toml, see duckhunt/core/config.py.
 
 
+def _inside(box: tuple[float, float, float, float], x: float, y: float) -> bool:
+    """Is the aim point inside `(x0, y0, x1, y1)`? Edges count as inside."""
+    x0, y0, x1, y1 = box
+    return x0 <= x <= x1 and y0 <= y <= y1
+
+
 class World:
     def __init__(self, seed: int | None = None, settings: Settings | None = None):
         self.settings = settings if settings is not None else load()
@@ -28,6 +42,13 @@ class World:
         self.score = 0
         self.shots = 0
         self.hits = 0
+        self.dog_hits = 0        # shots that hit the dog. He is on your side.
+        # Whether the crosshair was drawn at any point in this round. A scored
+        # round is shot down the sights; one that had the crosshair up is still a
+        # round, and still scored on screen, it is simply never a record. Latched
+        # rather than sampled at the end, so flipping it off before the last duck
+        # does not launder the round.
+        self.crosshair_used = False
         self.spawn_timer = 0.0
         self.spawn_interval = self.settings.round.interval
         self.released = 0        # how many ducks have been released this round
@@ -55,9 +76,41 @@ class World:
         return self.settings.round.ducks
 
     @property
+    def ammo(self) -> int:
+        """Shots left in the magazine, or -1 when it is not counted at all."""
+        cap = self.settings.round.ammo
+        return -1 if cap <= 0 else max(0, cap - self.shots)
+
+    @property
+    def dry(self) -> bool:
+        """Out of ammunition. Never true in a round that does not count shots."""
+        return self.ammo == 0
+
+    @property
+    def crowded(self) -> bool:
+        """The sky is as full as `[duck] max_alive` allows. 0 means never.
+
+        A duck that has been shot and is still falling counts: in a practice round
+        (`max_alive = 1`) the next duck waits until the dog has picked the last one
+        up, which is the pace a first-timer needs and reads on screen as one duck
+        at a time rather than as a gap.
+        """
+        cap = self.settings.duck.max_alive
+        return cap > 0 and len(self.ducks) >= cap
+
+    @property
     def finished(self) -> bool:
-        """Round over: stopped by the player, or the whole flock has come and gone."""
-        return self.stopped or (self.released >= self.total and not self.ducks)
+        """Round over: stopped, or the flock is gone, or the magazine is.
+
+        Either way the sky has to be empty first: the shot that empties the
+        magazine still counts, and a duck already falling still lands — ending the
+        round on the pull would take away the duck it just downed.
+        """
+        if self.stopped:
+            return True
+        if self.ducks:
+            return False
+        return self.released >= self.total or self.dry
 
     def stop(self) -> None:
         """End the round where it stands — what has been shot so far still counts.
@@ -101,27 +154,50 @@ class World:
         ))
         self.released += 1
 
-    def update(self, dt: float, aim_x: float, aim_y: float, fire: bool) -> None:
+    def update(self, dt: float, aim_x: float, aim_y: float, fire: bool,
+               dog_box: tuple[float, float, float, float] | None = None,
+               crosshair: bool = False) -> None:
+        """One frame. `dog_box` is the dog's `(x0, y0, x1, y1)` while he is up.
+
+        The dog is drawn by the frontend and the core has never heard of him, but
+        a shot that hits him has to cost what every other shot costs, decided in
+        the same place — so the frontend hands his box over for the frames he is
+        on screen, in the same 0..1 picture coordinates as the aim, and None the
+        rest of the time. `crosshair` is the same arrangement for the crosshair:
+        the frontend draws it, the round remembers it was up.
+        """
         if self.finished:
             return
+        if crosshair:
+            self.crosshair_used = True
         self.elapsed += dt
 
-        # spawn new ducks until the whole flock has been released
+        # Spawn new ducks until the whole flock has been released — and no further
+        # than the magazine reaches, because launching a duck at a player with
+        # nothing to shoot it with is not a round, it is a taunt.
         self.spawn_timer += dt
-        if self.released < self.total and self.spawn_timer >= self.spawn_interval:
-            self.spawn_timer = 0.0
-            self.spawn()
-            rnd = self.settings.round
-            self.spawn_interval = max(rnd.min_interval,
-                                      self.spawn_interval * rnd.speedup)
+        if self.released < self.total and not self.dry \
+                and self.spawn_timer >= self.spawn_interval:
+            if self.crowded:
+                # The pace is a timer, so a duck held back would otherwise owe a
+                # whole interval once the sky clears. Hold the timer at the mark
+                # instead: the next duck goes up as soon as there is room.
+                self.spawn_timer = self.spawn_interval
+            else:
+                self.spawn_timer = 0.0
+                self.spawn()
+                rnd = self.settings.round
+                self.spawn_interval = max(rnd.min_interval,
+                                          self.spawn_interval * rnd.speedup)
 
         # A shot downs the flying duck NEAREST the crosshair, if any is within the
         # shot's radius ([gun] spread) — the frontend draws the crosshair at that
         # same radius, so the circle on screen is the hit zone. Nearest rather
         # than first in the list, because with a radius two ducks can be in range
         # at once and the one you were aiming at is the closer one.
-        if fire:
+        if fire and not self.dry:
             self.shots += 1
+            points = self.settings.score
             radius = self.settings.gun.spread
             best, best_d = None, None
             for d in self.ducks:
@@ -134,7 +210,16 @@ class World:
                 best.state = DuckState.FALLING
                 best.vx = 0.0
                 self.hits += 1
-                self.score += self.settings.round.points
+                self.score += points.duck
+            elif dog_box is not None and _inside(dog_box, aim_x, aim_y):
+                # The dog is in front of everything while he is up, so he is
+                # checked after the ducks only because a duck in range was what
+                # the shot was for; hitting him instead is its own mistake and
+                # costs its own amount rather than a miss on top.
+                self.dog_hits += 1
+                self.score += points.dog
+            else:
+                self.score += points.miss
 
         # physics
         for d in self.ducks:

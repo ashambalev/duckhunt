@@ -1,4 +1,4 @@
-"""Who played last, in `player.json` next to scores.json.
+"""Who played last, and how much name they may type.
 
 The name is asked after every round now, and asking a repeat player to spell
 themselves out again every time is the kind of friction that ends with everybody
@@ -12,6 +12,15 @@ import json
 import os
 
 PLAYER_NAME = "player.json"
+
+# How much name a player may type. Generous on purpose: a name, a surname, a
+# nickname in Cyrillic, all of it. This is what is STORED — what is SHOWN is the
+# boards' business, and both of them cut a long name down to the width they have
+# (see NAME_W in leaderboard/display.py and .name in leaderboard/board.html). It
+# lives here, next to the name itself, now that the local score table it used to
+# belong to is gone; `leaderboard.store.NAME_MAX` is the same number on the
+# server's side of the wire.
+NAME_MAX = 50
 
 
 def default_path() -> str:

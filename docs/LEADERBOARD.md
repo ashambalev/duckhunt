@@ -38,9 +38,9 @@ MAC (the game)                          SERVER BOX (a Pi, or the same Mac)
                                         ┌──────────────────────────────────┐
                                         │  leaderboard/display.py (blessed)│
                                         │   ╔════ DUCK HUNT — TOP 10 ════╗ │
-                                        │   ║ 1. EUGENE   66 ducks  66%  ║ │
+                                        │   ║ 1. EUGENE  55 pts  33 ducks ║ │
                                         │   ╚════════════════════════════╝ │
-                                        │  ◀ NEW RECORD: EUGENE 66 *** 412 │
+                                        │  ◀ NEW RECORD: EUGENE 55 *** 412 │
                                         └──────────────────────────────────┘
 ```
 
@@ -125,21 +125,44 @@ CREATE TABLE runs (
     run_uuid     TEXT    NOT NULL UNIQUE,   -- idempotency: the game may retry a POST
     player_key   TEXT    NOT NULL,          -- name, normalized — this is "the same player"
     name         TEXT    NOT NULL,          -- name as typed, for display
-    hits         INTEGER NOT NULL,          -- ducks downed = the score
+    hits         INTEGER NOT NULL,          -- ducks downed
     shots        INTEGER NOT NULL,
-    ducks        INTEGER NOT NULL,          -- round size: 100-duck and 50-duck runs do not compete
+    ducks        INTEGER NOT NULL,          -- round size: 100-duck and 40-duck runs do not compete
+    score        INTEGER NOT NULL DEFAULT 0,-- what the board ranks by; may be negative
+    dog_hits     INTEGER NOT NULL DEFAULT 0,-- shots that hit the dog, at -5 each
+    crosshair    INTEGER NOT NULL DEFAULT 0,-- 1 = the crosshair was up: not a record
     accuracy     REAL    NOT NULL,          -- hits/shots*100, stored so the board sorts cheaply
     duration     REAL    NOT NULL,          -- world.elapsed, seconds
     started_at   TEXT    NOT NULL,          -- ISO-8601 UTC
     finished_at  TEXT    NOT NULL,
     client_id    TEXT    NOT NULL,          -- which cabinet sent it
-    input_source TEXT,                      -- mouse | serial | udp | wiimote | keyboard
+    input_source TEXT,                      -- mouse | serial | udp | keyboard
     game_version TEXT,
-    settings     TEXT                       -- JSON: interval, duck size, speeds — for context
+    settings     TEXT                       -- JSON: pace, duck size, speeds, ammo, the score table
 );
-CREATE INDEX runs_board  ON runs (ducks, hits DESC, shots ASC, finished_at ASC);
-CREATE INDEX runs_player ON runs (player_key, hits DESC, shots ASC);
+CREATE INDEX runs_board_v2  ON runs (ducks, score DESC, hits DESC, shots ASC, finished_at ASC);
+CREATE INDEX runs_player_v2 ON runs (player_key, score DESC, hits DESC, shots ASC);
 ```
+
+**The score is not the hit count any anymore**, which is the one thing to keep in
+mind reading the rest of this file. A duck is worth `+2`, a miss `−1` and the dog
+`−5`, out of a magazine of 40 (`[round] ammo`, `[score]` — see the README), so a
+round can finish below zero and the ranking had to stop meaning "who downed more".
+Everything now ranks by `score DESC, hits DESC, shots ASC, finished_at ASC`: hits
+break a tie, because between two equal scores the round that caught more ducks was
+the better one. `store.RANK` is that clause, once, interpolated everywhere, so the
+five places that rank cannot drift apart.
+
+**The migration, because the database already existed.** `CREATE TABLE IF NOT
+EXISTS` cannot add a column, so `init()` calls `_migrate()`: `PRAGMA table_info` for
+the three columns, `ALTER TABLE … ADD COLUMN` for whichever are missing, and — only
+when `score` was the missing one — `UPDATE runs SET score = hits` over the rows that
+were already there. That backfill is not a guess: those rounds were played when a
+duck was worth one point and nothing cost anything, so their score *was* their hit
+count. It cannot run twice, so a genuinely negative score is never overwritten. The
+old `runs_board` / `runs_player` indexes are dropped by name — `CREATE INDEX IF NOT
+EXISTS` over an existing index is a silent no-op, which is why the new ones are
+named `_v2` and the old names are gone rather than redefined.
 
 **How long a name may be.** `scores.NAME_MAX` is **50** — a name, a surname and a
 nickname in Cyrillic if that is what somebody types. That is what is *stored*;
@@ -153,25 +176,27 @@ panel.
 so `Eugene`, `eugene` and `  Eugene ` are one person; the board shows the spelling
 from their best run. No accounts, no passwords: this is a party scoreboard.
 
-**The board query** — best run per player, ranked exactly like the game's own
-`scores._rank` (more hits first, then fewer shots, then whoever got there first):
+**The board query** — best run per player, ranked by score:
 
 ```sql
-SELECT name, hits, shots, ducks, accuracy, finished_at, attempts
+SELECT name, score, hits, shots, ducks, accuracy, finished_at, attempts
 FROM (
     SELECT *,
            ROW_NUMBER() OVER (PARTITION BY player_key
-                              ORDER BY hits DESC, shots ASC, finished_at ASC) AS rn,
+                              ORDER BY score DESC, hits DESC, shots ASC,
+                                       finished_at ASC) AS rn,
            COUNT(*)     OVER (PARTITION BY player_key) AS attempts
     FROM runs WHERE ducks = :ducks
 )
 WHERE rn = 1
-ORDER BY hits DESC, shots ASC, finished_at ASC
+ORDER BY score DESC, hits DESC, shots ASC, finished_at ASC
 LIMIT :limit;
 ```
 
-`attempts` comes free from the same pass, and the board shows `66 DUCKS … 12
-TRIES` — which is the fun part of keeping every row.
+`attempts` comes free from the same pass, and the board shows `55 PTS … 33 DUCKS …
+12 TRIES` — which is the fun part of keeping every row. A personal best is a better
+*score* now, not more ducks: `answer()` compares scores, so a round that caught
+fewer ducks but wasted far fewer shots is the improvement it says it is.
 
 ## The HTTP API
 
@@ -182,25 +207,36 @@ Everything is JSON. Errors are `{"error": "..."}` with a 4xx/5xx code.
 | `POST` | `/api/runs` | submit a finished round; returns rank and personal best |
 | `GET` | `/api/board?ducks=100&limit=10&window=all\|today\|week&order=best\|attempts` | the board: best run per player |
 | `GET` | `/api/player/<name>?ducks=100&limit=20` | one player: best run, attempt count, recent history |
+| `GET` | `/api/players?q=жен&limit=8` | the name entry's search: who is already on the board |
 | `GET` | `/api/stats?ducks=100` | totals for the running line |
 | `GET` | `/healthz` | `{"ok": true}` — the display's link indicator |
 
 **`POST /api/runs`** — the game sends:
 
 ```json
-{ "run_uuid": "3f2c…", "name": "Eugene", "hits": 66, "shots": 100, "ducks": 100,
+{ "run_uuid": "3f2c…", "name": "Eugene", "hits": 24, "shots": 40, "ducks": 40,
+  "score": 44, "dog_hits": 1, "crosshair": false,
   "duration": 61.4, "started_at": "2026-09-02T18:20:11Z",
   "finished_at": "2026-09-02T18:21:12Z", "client_id": "eugene-mac",
   "input_source": "serial", "game_version": "0.5.0",
-  "settings": {"interval": 0.6, "width": 0.13, "speed_min": 0.3, "speed_max": 0.55} }
+  "settings": {"interval": 0.9, "width": 0.13, "speed_min": 0.3, "speed_max": 0.65,
+               "spread": 0.02, "ammo": 40, "duck": 2, "miss": -1, "dog": -5,
+               "max_alive": 0} }
 ```
 
 and gets back where the round landed:
 
 ```json
-{ "ok": true, "rank": 3, "of": 17, "personal_best": 66, "previous_best": 57,
-  "improved": true, "attempts": 12, "world_record": {"name": "Anna", "hits": 71} }
+{ "ok": true, "rank": 3, "of": 17, "score": 44, "hits": 24, "dog_hits": 1,
+  "personal_best": 44, "previous_best": 37, "improved": true, "attempts": 12,
+  "world_record": {"name": "Anna", "score": 58, "hits": 30} }
 ```
+
+`score`, `dog_hits` and `crosshair` are **optional**, and a POST without them is
+accepted with `score = hits`: a cabinet running an older copy of the game plays the
+old rule, where a duck was worth a point and nothing cost anything, so that is its
+real score rather than a zero that would park its whole evening at the bottom of the
+board.
 
 The game does not draw any of that — it is there for the log, for a future results
 screen on the *board's* side, and because a POST that answers only "ok" is a POST
@@ -212,8 +248,11 @@ nobody can debug.
   said.
 - **Validation, because the port is open on the LAN**: body ≤ 8 KB; `name` non-empty
   and trimmed to 50; `0 ≤ hits ≤ shots`; `hits ≤ ducks`; `1 ≤ ducks ≤ 10000`;
-  `0 ≤ duration < 24 h`; timestamps parseable. Anything else is a `400` and is not
-  stored — a junk row on the board is forever.
+  `0 ≤ duration < 24 h`; `0 ≤ dog_hits ≤ shots`; timestamps parseable. Anything else
+  is a `400` and is not stored — a junk row on the board is forever. `score` is the
+  one number that is **not** bounded: a round genuinely can finish at `−35`, and
+  clamping it at zero would only hide the worst round of the evening, which is half
+  the entertainment.
 - **Optional shared secret**: `--token SECRET` on the server, `X-Duckhunt-Key` on
   the request, compared with `hmac.compare_digest`. Off by default (home LAN);
   `[leaderboard] token` on the game's side when it goes to a public event.
@@ -222,9 +261,47 @@ nobody can debug.
 downed, today's best, the standing record, and the most recent run (with
 `is_record`) so the ticker can shout about a fresh one.
 
+**`GET /api/players?q=`** is the only route the *game* reads rather than writes,
+and it exists to stop one player becoming three. Typing a name from scratch every
+evening is how `Женя`, `женя` and `Zhenya` end up as three rows, so the name entry
+searches as it types and offers what is already there:
+
+```json
+{ "ok": true, "q": "жен",
+  "rows": [ { "name": "Женя", "hits": 31, "shots": 40, "ducks": 40,
+              "accuracy": 77.5, "attempts": 12,
+              "last_played": "2026-09-26T21:40:02+00:00",
+              "finished_at": "2026-09-12T19:02:44+00:00" } ] }
+```
+
+Four decisions are worth knowing, because each of them is a thing the obvious
+version gets wrong:
+
+- **Blind to case *and* to accents.** `player_key` (whitespace-collapsed,
+  casefolded) is what groups a player's attempts; the *search* folds harder —
+  `store.search_key` also strips combining marks, so `José` is reachable by
+  `jose` and a `Женя` typed with a Latin `e` still lands. The folding happens on
+  both sides of the comparison, inside SQL, via a `fold()` function registered on
+  the connection: SQLite's own `LIKE` only knows ASCII case. Matching is `instr()`
+  rather than `LIKE '%q%'` — substring, and nothing in a typed name has to be
+  escaped, `%` and `_` included.
+- **Every round size at once.** The board keeps 40-duck and 100-duck rounds apart
+  on purpose, but a name is a name whatever they played, and a search that hid a
+  regular because tonight's round is a different length would recreate the very
+  duplicate it exists to prevent. So the score comes back with its own `ducks` and
+  the screen says `31/40`.
+- **The spelling that comes back is the first one they used**, not the one on
+  their best run. It is what they will recognise, and the key groups the attempts
+  either way.
+- **An empty `q` is not an error**, it is the screen opening: the most recent
+  players, which after one evening is exactly the right guess.
+
+`LIKE`-versus-FTS5 does not come up at a few hundred rows, and SQLite's FTS5 is
+there if it ever does — it will not.
+
 ## The server
 
-`leaderboard/server.py` — `ThreadingHTTPServer`, a router of five routes, and
+`leaderboard/server.py` — `ThreadingHTTPServer`, a router of six routes, and
 `leaderboard/store.py` doing every bit of SQL. `build()` hands a ready server back
 rather than serving it, which is what lets `python3 -m leaderboard` run one in a
 thread beside the board.
@@ -234,7 +311,8 @@ thread beside the board.
 - A connection per request; nothing shared between threads.
 - `--host 0.0.0.0 --port 8420 --db leaderboard.db --token …`
 - One line per accepted run on stdout, so the terminal it runs in *is* the audit
-  trail: `18:21:12  eugene  66/100  66%  61s  rank 3`.
+  trail, leading with the number the board ranks by:
+  `18:21:12  eugene  44 pts  24/40  92%  61s  rank 3`.
 
 **Autostart on the Pi** (once it lives on a box of its own): a `systemd` unit for
 the server and a second one for the display on tty1, both `Restart=always`; on a
@@ -307,14 +385,21 @@ is a reload rather than a restart.
 black.
 
 ```
-╔══════════════════════════════════════════════════════════╗
-║                          TOP 10                          ║
-╠══════════════════════════════════════════════════════════╣
-║  1. EUGENE ..............  66 DUCKS  66%  12 TRIES 09-02 ║
-║  2. MIKE ................  57 DUCKS  66%   4 TRIES 09-01 ║
-╚══════════════════════════════════════════════════════════╝
-◀ *** NEW RECORD: EUGENE — 66 DUCKS ***  412 ROUNDS PLAYED  ***
+╔══════════════════════════════════════════════════════════════════════╗
+║                                TOP 10                                ║
+╠══════════════════════════════════════════════════════════════════════╣
+║  1. EUGENE .................   55 PTS  33 DUCKS  75%  12 TRIES 09-02 ║
+║  2. MIKE ...................   46 PTS  29 DUCKS  78%   4 TRIES 09-01 ║
+║  3. ALEXANDRA KONSTAN… .....  -35 PTS   3 DUCKS   8%   1 TRY   09-26 ║
+╚══════════════════════════════════════════════════════════════════════╝
+◀ *** NEW RECORD: EUGENE — 55 PTS ***  412 ROUNDS PLAYED  ***
 ```
+
+The panel is 70 columns inside rather than the 58 it was: five numbers do not fit
+beside an 18-character name without the date falling off the end, and 72 all told
+still sits inside an 80-column terminal. Under 40 columns the compact row shows the
+score instead of the ducks — that is the number the board ranks by, and if only one
+fits it is that one.
 
 - **The running line.** One string built from `/api/stats`, `***`-separated,
   scrolled right-to-left: render `(text * 3)[off : off + width]` and advance `off`
@@ -351,7 +436,7 @@ black.
   LOADING BOARD ...
   ```
 - **A blinking block cursor** `█` parked at the end of the running line.
-- **Dot leaders and uppercase**: `EUGENE ....... 66 DUCKS`. Names are upper-cased
+- **Dot leaders and uppercase**: `EUGENE ....... 55 PTS`. Names are upper-cased
   for display only; the database keeps what was typed.
 - **Double-line box drawing**, with `--ascii` falling back to `+---+`.
 - **A block-letter `DUCK HUNT` banner** from a five-row font built into the module
@@ -365,31 +450,67 @@ manager rather than a screen.
 
 ## What changed in the game
 
-`scores.json` is still written exactly as before — the per-machine mirror, and the
-thing that works with no server anywhere. It is simply never shown any more.
+`scores.json` is **no longer written at all**, and `duckhunt/core/scores.py` is
+gone. It was ten rows on one machine, and it went on being written long after
+anything stopped reading it back out — a mirror nobody looks in. What actually
+survives a board being down is `pending_runs.jsonl`, which is a different
+mechanism and a working one. `leaderboard/seed.py` keeps its own reader for an old
+`scores.json`, because those files are real evenings and `--from-scores` exists to
+put them on the board rather than to throw them away for being in the old shape.
 
-1. **`WHO WAS SHOOTING?` after every round**, not only a record one: the board
-   keeps every attempt, and a round nobody signed is a row nobody can find. Enter
-   sends it, Esc skips it entirely. The buffer starts on the last name used
+1. **`WHO WAS SHOOTING?` after every round that could be a record**, not only a
+   winning one: the board keeps every attempt, and a round nobody signed is a row
+   nobody can find. (A round that could not be a record does not ask — see 3.)
+   Enter sends it, Esc skips it entirely. The buffer starts on the last name used
    (`player.json`, or `--player`), and the first character typed replaces it whole,
    so a new player does not have to backspace someone else's name out.
-2. **The round has an identity**: `World` makes a `run_uuid` and stamps
+2. **The names already there are offered under the field** — `/api/players?q=`
+   searched as you type, `TAB` / `↓` / the trigger to take one, `↑` to come back
+   off the list to what you typed, `ENTER` — or **A on the remote** — to send
+   whatever is in the field. Trigger to pick and A to send is the gun-only path:
+   a returning player never touches the keyboard, and A has nothing else to do on
+   this screen (there is no crosshair here to toggle). The
+   lookup is `PlayerLookup` in the same client module: its own worker thread, one
+   request per pause in the typing rather than one per keystroke, a 1.5 s ceiling,
+   and every failure an empty list — the name screen must never wait on the board,
+   and with the board off it is exactly the screen it was before.
+3. **Not every round is offered.** `leaderboard_client.refusal(world, settings)` is
+   the one place that decides, and both frontends ask it: a practice round
+   (`[round] scored = false`) is not a record by definition, and a scored round that
+   had the crosshair up at any point is not one either — a scored round is shot down
+   the sights. A refused round skips the `WHO WAS SHOOTING?` screen altogether
+   rather than asking for a name nobody will ever find, and the results screen says
+   which of the two reasons applies. `crosshair` still rides along in the payload
+   and is stored, so the server can turn such a row away itself if a cabinet ever
+   sends one.
+4. **The round has an identity**: `World` makes a `run_uuid` and stamps
    `started_at` when it is constructed, so a retried POST is recognised as the same
    round.
-3. **`duckhunt/net/leaderboard_client.py`** posts on a worker thread — 3 tries,
+5. **`duckhunt/net/leaderboard_client.py`** posts on a worker thread — 3 tries,
    0.5/1/2 s apart — and on any failure appends the payload to
-   `pending_runs.jsonl` next to `scores.json`. The queue is flushed oldest-first on
+   `pending_runs.jsonl` in the project root. The queue is flushed oldest-first on
    the next launch and after every successful POST. A 4xx is *not* queued: the
    server refused the row itself, and retrying it forever on every launch would be
    a bug with a long memory.
-4. **One line on the results screen**, about delivery and nothing else:
+6. **One line on the results screen**, about delivery and nothing else:
    `SENDING THE ROUND TO THE BOARD…` → `ON THE BOARD`, or `SAVED — WILL SYNC WHEN
    THE BOARD IS BACK`. Nothing when the board is off.
-5. **`[leaderboard]` in `settings.toml`** (`enabled`, `url`, `client_id`,
+7. **`[leaderboard]` in `settings.toml`** (`enabled`, `url`, `client_id`,
    `timeout`, `token`), overridden by `DUCKHUNT_LEADERBOARD` and then by
    `--leaderboard URL` / `--no-leaderboard`.
-6. **The ASCII frontend does the same** from `main.py`: a one-line prompt after the
-   round, `--player NAME` to skip it, and no table printed on exit.
+8. **The ASCII frontend does not talk to the board at all**, and that is a
+   decision rather than an omission. It draws a `+` at the aim point and the arrow
+   keys move that mark, so the mark *is* the aiming, exactly as the crosshair is for
+   the mouse; it passes `crosshair=True` to every `world.update` and `refusal()`
+   turns the round away. A board where a keyboard round and a light-gun round sat in
+   the same column would not be measuring anything.
+
+   So the prompt is gone rather than unreachable: it used to ask who was shooting,
+   remember the name and post the row, and all of that was dead the moment the rule
+   applied to it. `main.py` prints the result and one line saying a keyboard round is
+   not for the board, which is the whole of its business with the leaderboard now.
+   The round is still played and still scored on screen. `--player` stays — it
+   pre-fills the pixel frontend's question.
 
 ## Milestones
 
@@ -400,35 +521,54 @@ thing that works with no server anywhere. It is simply never shown any more.
       planned), remembered in `player.json`, `--player` to skip it.
 - [x] **M4 — the game talks to the board.** The client, the `[leaderboard]`
       settings, the offline queue, the one delivery line on the results screen.
-- [x] **M5 — seeding.** `leaderboard/seed.py`: import `scores.json`, `--demo N`.
+- [x] **M5 — seeding.** `leaderboard/seed.py`: import an old `scores.json`, `--demo N`.
 - [ ] **M6 — autostart.** `systemd` units for the Pi / a `launchd` plist for the
       Mac, so the board comes up with the box. Blocked on the Pi existing: see
       the note under **The server** for why it buys nothing here.
-- [ ] **M7 — if it earns it.** Shoot-the-letters name entry (the only thing the keyboard
-      is still needed for); `/api/events` as SSE so the display reacts instantly
-      instead of polling.
+- [ ] **M7 — if it earns it.** Shoot-the-letters name entry — now only for a name
+      the board has never seen, since the trigger picks one it has and A sends it;
+      `/api/events` as SSE so the display reacts instantly instead of polling.
 
 ## Files
 
 | Path | What |
 |---|---|
 | `leaderboard/__main__.py` | `python3 -m leaderboard`: the server in a thread, the board in front |
-| `leaderboard/store.py` | SQLite: schema, `insert_run`, `board`, `player`, `stats` |
-| `leaderboard/server.py` | the HTTP server and its five routes |
+| `leaderboard/store.py` | SQLite: schema, `insert_run`, `board`, `player`, `search_players`, `stats` |
+| `leaderboard/server.py` | the HTTP server and its six routes |
 | `leaderboard/display.py` | the blessed console board with the running line |
 | `leaderboard/board.html` | the browser board: the same data as a tube TV |
-| `leaderboard/seed.py` | import `scores.json`, generate and clear demo rows |
-| `duckhunt/net/leaderboard_client.py` | POST + retries + `pending_runs.jsonl` |
+| `leaderboard/seed.py` | import an old `scores.json`, generate and clear demo rows |
+| `duckhunt/net/leaderboard_client.py` | POST + retries + `pending_runs.jsonl`, and `PlayerLookup` |
 | `duckhunt/core/player.py` | who played last, in `player.json` |
-| `duckhunt/frontends/pygame_app.py` | the `name` mode after the round, the delivery line |
+| `duckhunt/frontends/pygame_app.py` | the `name` mode after the round, the names on offer, the delivery line |
 | `duckhunt/core/config.py`, `settings.toml` | the `[leaderboard]` section |
-| `main.py` | `--player`, `--leaderboard`, `--no-leaderboard`, the ASCII prompt |
+| `main.py` | `--player`, `--practice`, `--leaderboard`, `--no-leaderboard` |
+| `practice.toml` | the practice round: ten slow ducks, one at a time, nothing sent |
 | `docs/LEADERBOARD.md` | this file |
+
+## Tests
+
+`.venv/bin/python -m pytest tests/ -q` — the store's queries, the routes over a
+real `ThreadingHTTPServer` on a throwaway database, and `PlayerLookup` against
+both a live server and a dead port. They never touch `leaderboard.db`, so they
+run happily while an evening's board is up.
 
 ## Checks worth running by hand
 
 - Two players, the same name in different case → **one** row on the board, the
   higher score, `attempts` counting both.
+- A round shot with the crosshair on → no name screen, the results screen says the
+  crosshair was up, and nothing arrives on the board.
+- `--practice` → no name screen either, and the board is untouched by ten rounds of it.
+- A round that ends on an empty magazine → the shot that emptied it counted, the last
+  duck landed, and the row that arrives says the score, not the ducks.
+- An old copy of the game posting without `score` → accepted, ranked as `score = hits`.
+- Type three letters of a name that is on the board → it appears under the field;
+  the trigger takes it without touching the keyboard; the round lands on that
+  player's row and moves their `tries`, not their best.
+- Play a round with the board stopped → the name screen has no list, waits for
+  nothing, and Enter still sends (to `pending_runs.jsonl`).
 - Twenty rounds by one player → the board shows their best,
   `/api/player/eugene` shows all twenty.
 - Kill the server mid-evening, play three rounds, bring it back, relaunch the game

@@ -8,11 +8,17 @@ ESP32-S3-CAM plan B). Nothing is falling back to anything: the remote plays.
 
 Stage 7, the leaderboard, is built and running — the server, the console board on
 a screen of its own, and the game posting one row per round without drawing any of
-it ([`docs/LEADERBOARD.md`](LEADERBOARD.md)). It is finished through M5: one
-command brings the whole thing up, and the one milestone still open is waiting on
-hardware rather than on anyone writing it. So the real next work is the two ideas
-below, which only matter once people play often enough to have names worth
-finding. The milestone numbers are `LEADERBOARD.md`'s, and they match it.
+it ([`docs/LEADERBOARD.md`](LEADERBOARD.md)). It is finished through M5, and the one
+milestone still open is waiting on hardware rather than on anyone writing it. The
+milestone numbers are `LEADERBOARD.md`'s, and they match it.
+
+**The three jobs that used to sit below this are done**: the name search, the two
+rounds, and the clear-out. What is left in this file is the two things blocked on a
+box that does not exist, one rough edge in the smallest window, and M7 — the list of
+things that only earn themselves once the game is played often enough to ask for
+them. There is a test suite now: `.venv/bin/python -m pytest tests/ -q`, 87 tests
+over the store's queries, the routes, the two rounds' arithmetic and the name screen
+driven headlessly.
 
 ## Next up
 
@@ -43,6 +49,14 @@ finding. The milestone numbers are `LEADERBOARD.md`'s, and they match it.
       the Pi under the TV and does not exist yet. Written before that box is
       here, a unit is a guessed user, a guessed path and a guessed tty that
       nobody can run once to check.
+- [ ] **The smallest window clips the keymap.** A results screen carrying both
+      `STOPPED EARLY` (or `OUT OF AMMUNITION`) *and* a delivery line needs about
+      510 px of panel, and the smallest windowed picture is 450 px tall, so the last
+      row or two of the keymap goes off the bottom. Pre-existing — the old layout
+      needed 482 px of the same 450 — and invisible in fullscreen, which is how the
+      game is actually played. The real cause is that the fonts are fixed at 22/40 pt
+      while the picture is not; the fix is font sizes measured off the picture, the
+      way the keymap, the HUD and the name screen's own two lines already are.
 - [ ] **M7 — if it earns it.** Shoot-the-letters name entry, `/api/events` so the
       board reacts instead of polling, per-day and per-week boards on a rotating
       panel.
@@ -53,115 +67,155 @@ two cases landing on one row, and the server killed mid-evening.
 
 ## After the leaderboard
 
-These three are the next real work — M6 is parked until there is a Pi to park it
-on. All of them touch files another session is writing right now (`main.py`, `frontends/pygame_app.py`, `core/world.py`, `core/config.py`,
-`leaderboard/store.py`), so starting early means merging for no reason.
+All three are done, in the order 2, 1, 3: the name search first because it touched
+nothing the other two needed, then the two rounds, then the clear-out once there was
+something to clear out *of*. They are kept here rather than deleted because each one
+records a decision that is not in the code — what was rejected, and why.
 
-### 1. Two modes: a scored round and a practice round
+### 1. ~~Two modes: a scored round and a practice round~~ — done
 
-Today there is one round and it is always for the record. Split it in two.
+Two settings files over the same game rather than two code paths, which is what
+`--settings hard.toml` was always for.
 
-**Scored** is what plays today — 40 ducks, shot down the sights — plus a cost for
-firing:
+**Scored** — `settings.toml`, the default: 40 ducks and **40 shots**. The round ends
+when the ducks run out or the magazine does, whichever comes first; the shot that
+empties it still counts, a duck already falling still lands, and no further ducks
+are launched with nothing left to shoot them with. `+2` a duck, `−1` a miss, `−5`
+the dog — the dog's penalty replaces the miss rather than stacking on it. The score
+may go below zero and is shown below zero.
 
-- **40 rounds of ammunition.** The round ends when the ducks run out *or* the
-  magazine does, whichever comes first (the shot that empties it still counts, and
-  a duck already falling still lands). Today nothing counts ammunition at all:
-  `World.finished` looks only at how many ducks have been launched.
-- **+2 a duck, −1 a miss, −5 the dog.** The first two are cheap — `World` already
-  keeps `shots` and `hits`, and `[round] points` is the +2 knob under a new name.
-  The dog is not: it lives entirely in the pixel frontend, an animation driven by
-  the `landed` and `escaped` counters, and `core` has never heard of it. Something
-  has to cross that line — the honest version is the frontend handing the world
-  the dog's box while it is up, so the hit is decided where every other hit is.
-- **The crosshair stays toggleable, but a round that used it does not count.** `C`
-  (and `A` on the remote) already flips it; what is missing is the round
-  remembering that it was ever on, and that flag riding along in M4's payload so
-  the server can turn the row away.
+**Practice** — `--practice`, which is exactly `--settings practice.toml`: ten ducks,
+slow, **one in the air at a time** (`[duck] max_alive = 1`, the only genuinely new
+mechanic — the pace is a timer, so the held-back duck goes up the moment the sky
+clears rather than waiting out another interval), unlimited ammunition, the
+crosshair on, and nothing sent to the board.
 
-**Practice** is for handing the gun to someone who has never held one: **10 ducks,
-slow, one in the air at a time**, crosshair on or off as they like, nothing sent
-to the board. One duck at a time is the only genuinely new mechanic — the pace
-today is a timer, so a `max_alive` cap is needed to make the next duck wait for
-the last one.
+**The dog crossed the line the honest way.** He is still drawn entirely by the
+frontend, and `core` still has never heard of him — but `World.update` now takes
+`dog_box` for the frames he is up, in the same 0..1 coordinates as the aim, so the
+shot that hits him is decided where every other shot is decided and costs what the
+settings say.
 
-**Every number a setting, and the modes as files.** `--settings hard.toml` already
-works, so the two modes are two files over the same defaults rather than a second
-code path:
+**A scored round is shot down the sights**, which needed a decision the old note
+did not have: the crosshair was *on* by default, so the rule as written would have
+meant no round ever counted. `[gun] crosshair` is now `"auto"` (off with a gun
+plugged in, on for the mouse, which has no front sight to aim down), `"on"` or
+`"off"`. `C` and A on the remote still flip it; `world.crosshair_used` is latched,
+so flipping it back does not launder the round, and `leaderboard_client.refusal()`
+is the one place that decides whether a round may be offered — both frontends ask
+it, the results screen says which reason applies, and a refused round skips the
+name screen altogether rather than asking for a name nobody will find.
 
-```toml
-[round]
-ducks = 40         # 10 in practice.toml
-ammo = 40          # shots per round; 0 = unlimited (practice)
-scored = true      # false = never offered to the leaderboard
+**The board ranks by score**, done with the modes rather than after them: `score`,
+`dog_hits` and `crosshair` in the schema, the payload and the validator, both
+indexes and every `ORDER BY` changed to `score DESC, hits DESC, shots ASC`, a
+migration that adds the columns to the database that already exists and backfills
+old rows with `score = hits` (exactly right: they were played when a duck was worth
+one point and nothing cost anything), and both boards showing the number they rank
+by.
 
-[score]
-duck = 2           # a duck downed  (was [round] points = 1)
-miss = -1          # a shot that hit nothing
-dog = -5           # a shot that hit the dog
+Tests: `tests/test_round_modes.py` (ammunition, the penalties, the dog's box, the
+one-at-a-time pace, the crosshair latch), `tests/test_score_board.py` (ranking,
+the migration) and `tests/test_name_screen.py` (the screen driven headlessly).
 
-[duck]
-max_alive = 0      # 0 = as many as the pace launches; 1 = one at a time
-```
-
-`main.py --practice` as a shortcut for `--settings practice.toml` keeps it one
-keystroke at the title screen.
-
-Two things to decide before writing it:
-
-- **May the score go negative?** −1 a miss with 40 shots means it can. Letting it
-  is the honest answer and the HUD can show it; clamping at zero only hides that
-  the round went badly.
-- **The board has to rank by score, not by hits.** `runs` has no `score` column
-  and `board()` orders by `hits DESC, shots ASC` — which stops meaning anything
-  once a miss costs a point and the dog costs five. So: `score` (and a `dog_hits`
-  counter) into the schema and the payload, the two indexes and both order-by
-  clauses changed, and `leaderboard/display.py` showing the number it ranks by.
-  Do this *with* the mode work, not after it, or the first scored round on the
-  board will be ranked by the old rule.
-
-### 2. Name entry that finds the name you already have
+### 2. ~~Name entry that finds the name you already have~~ — done
 
 Typing a name from scratch every evening is how `Женя`, `женя` and `Zhenya` end up
-as three players. The name entry should search as you type and offer what is
+as three players. The name entry now searches as you type and offers what is
 already there to pick instead.
 
-- **The server side is a route that does not exist yet**: the five are `/healthz`,
-  `/api/board`, `/api/stats`, `/api/player/<name>` and the POST. Add
-  `/api/players?q=` — prefix and substring, case- and accent-blind, returning the
-  name as it was first spelled with its best score and attempt count, so the
-  entry screen can show `Женя — 66 (12 tries)` rather than a bare list. SQLite's
-  FTS5 is there if `LIKE '%q%'` over a few hundred rows ever stops being enough,
-  which it will not.
-- **The client side** is the `name` mode M3 built, which currently offers exactly
-  one candidate — the last name used on this machine. What is missing is a list
-  under the field: the trigger or `TAB` to take a suggestion, `ENTER` to keep what
-  was typed as a new player.
-- **Picking an existing name is not overwriting anything.** This is already how
-  the store works and it is worth not breaking: every attempt is its own row, and
-  the board is a query for the best row per player (`_BEST_PER_PLAYER`). So a
-  worse round still gets stored — it moves `attempts` and nothing else — and the
-  board keeps showing the best. Nothing to build here beyond making the screen say
-  so, which stops it looking like the run was thrown away.
+- **`GET /api/players?q=`** — the sixth route. `store.search_players`: one row per
+  player, the spelling they first used, their best run with its own round size, and
+  the attempt count, so the screen shows `Женя — 31/40 (12 tries)`. Blind to case
+  *and* to accents (`store.search_key` strips combining marks; the folding happens
+  inside SQL through a `fold()` function registered on the connection, because
+  SQLite's `LIKE` only knows ASCII case), matched with `instr()` so nothing in a
+  typed name needs escaping, and across every round size — a name is a name
+  whatever length of round it was first typed in. An empty `q` is the screen
+  opening: the most recent players.
+- **`PlayerLookup`** in `duckhunt/net/leaderboard_client.py` — the client's first
+  GET. Its own worker thread, one request per pause in the typing rather than one
+  per keystroke, a 1.5 s ceiling, and every failure an empty list: the name screen
+  never waits on the board, and with the board off it is the screen it always was.
+- **The list under the field**: `TAB` / `↓` / **the trigger** takes the next name,
+  `↑` comes back off the list to what was typed, `ENTER` — or **A on the remote** —
+  sends whatever is in the field. Trigger to pick and A to send is the point: a
+  player three metres away with a gun in both hands no longer walks to the keyboard
+  for a name that is already there, which is exactly how the fourth spelling of it
+  used to arrive. A name the board has never seen still needs the keyboard — that
+  is what M7's shoot-the-letters entry is left for.
+- **Picking an existing name overwrites nothing**, and the screen says so in as
+  many words: every attempt has always been its own row, the board is the best row
+  per player, so a worse round moves `tries` and leaves the best where it was.
+- The ASCII path got that line too, and then lost the whole prompt: a keyboard
+  round is refused by the same rule (its `+` is the aiming), so asking who was
+  shooting was asking for a row that would never exist. `main.py` prints the result
+  and one line saying so. That is the second thing the rule cost, after the mouse,
+  and both were the point of it rather than a surprise.
+- Tests: `tests/` (new — `pytest`), covering the folding, prefix-before-substring,
+  the first spelling, wildcards as literal characters, the route over a real
+  server, and `PlayerLookup` against both a live server and a dead port.
 
-### 3. Clear out what is no longer used
+### 3. ~~Clear out what is no longer used~~ — done, and three of the five were wrong
 
-Once the modes and the name entry are in, a pass over what nobody calls any more.
-Known candidates, to be checked rather than trusted:
+The instruction this list came with was "to be checked rather than trusted", and
+that turned out to be the valuable half of it: two candidates were dead, three were
+not, and saying which is which is the result.
 
-- `duckhunt/input/wiimote.py` — the remote straight over Bluetooth, which macOS
-  never let work; kept as reference for a path that is now closed.
-- `core/scores.py` and `scores.json` — the local high-score table, once the board
-  is the real one. `leaderboard/seed.py` imports the file, so the import runs
-  first and the table goes after.
-- The alignment and calibration screens' overlap: `--align`, `--calibrate`, `F1`,
-  `F2`, `TAB` accumulated over three hardware evenings and some of it was for
-  beacons that are now stuck down for good.
-- `settings.toml` is 15 kB of comments for keys that were tuned once and never
-  touched again; splitting the hardware block out of the game block would make
-  both readable.
-- Dead ends in `tools/`: `ir_view.py` is 1300 lines, most of it written for
-  measurements that are now finished.
+**Deleted — the remote straight over Bluetooth.** `duckhunt/input/wiimote.py`,
+`--wiimote`, and `hidapi` out of `requirements.txt` (nothing else imported it, in
+the repo or in the venv). It was labelled "kept for reference" in its own docstring
+and in the README, which is a job git already does better. `tools/wiimote_monitor.py`
+stays — it watches the *bridge*, which is the live path.
 
-Run it as its own pass with the game playable at the end of each step, not as a
-tidy-up bolted onto a feature.
+**Deleted — the local high-score table.** `duckhunt/core/scores.py` is gone and
+`scores.json` is no longer written. Ten rows on one machine, invisible to anyone not
+sitting at it, still being written long after the last thing that read them back was
+removed. Three things had to find a home first, which is why this was not a delete
+but a move:
+
+- `NAME_MAX` went to `duckhunt/core/player.py`, next to the name it limits.
+- `pending_path()` was deriving the project root from `scores.default_path()`; it
+  uses `player.default_path()` now. The offline queue never had anything to do with
+  the score table.
+- `--from-scores` **kept its reader**, moved into `leaderboard/seed.py` as
+  `read_scores()`. An old `scores.json` in somebody's project root is a handful of
+  real evenings, and the import exists to put them on the board rather than to throw
+  them away for being in the old shape. It is the only thing left that understands
+  that format, so it has tests of its own now (`tests/test_seed_import.py`),
+  including a malformed row and a broken file.
+
+**Not dead: the alignment and calibration screens.** The suspicion was that three
+hardware evenings had left redundant controls behind. They had not. `--calibrate` is
+literally F1 called at startup and `--align` is TAB's boolean pre-flipped — both
+documented in the README as the way the procedure is run, so they are shortcuts, not
+duplicates. F2 and `--no-calibration` look like the same switch and are not: F2
+toggles a correction that was *loaded*, while `--no-calibration` means
+`calibration.json` is never read at all, which is what you reach for when you
+suspect the file itself. That distinction was in `--help` and nowhere else, so it is
+in the README now. TAB (where to tape the beacons) and F1 (sight parallax) measure
+two unrelated things. Nothing here was removed. Worth knowing before anyone tries
+again: `tests/` covers none of it.
+
+**Not dead: `tools/ir_view.py`.** 1321 lines, and the parts that look like finished
+measurements are the parts that come back the first time the rig moves —
+`--bezel` computes the `[gun] beacon_*` numbers that are baked into `settings.toml`
+today, and `settings.toml` quotes the exact invocation that produced them. `--plan`
+says where to stand, the axis checks matter after any reflash, and the README points
+at the live view and `--summary` for ordinary debugging. All seven files in `tools/`
+are referenced by the README or `docs/BUILD.md`. A hardware instrument is not dead
+code just because the hardware currently works.
+
+**`settings.toml` was not split, and the reason is worth recording.** 357 lines,
+three quarters of them comments, and every key in it has a live reader — there is no
+dead weight to remove, only an ordering problem. Splitting the hardware block into a
+second file is now mechanically possible (`config.load()` grew `overlay=` for
+`--practice`), but it would mean two files to keep in step, a second path to pass
+around, and `--settings` meaning something different depending on which half you
+meant. What the file actually needed was to say where things are: it now opens with
+a map of its own sections, and the `[gun]` section is fenced in two — the *feel*
+(spread, crosshair, lead) above the line, the *rig* (frame, beacons: the only part
+about one particular room) below it. If the split is wanted anyway, it is a small
+change on top of this and the fence is where it would cut.
+
+

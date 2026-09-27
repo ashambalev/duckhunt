@@ -24,7 +24,15 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import store
 
-MAX_BODY = 8192          # a round result is ~400 bytes; anything larger is junk
+MAX_BODY = 8192
+# The widest a score may be, per duck in the round, in either direction. There is
+# no honest exact bound — the points table lives in the game's settings, and the
+# server is told what it was rather than deciding it — but there is an obvious
+# insane one. `score DESC` leads every ranking and nothing ever rewrites a stored
+# score, so one hand-made POST of 10^15 would own the board, the ticker and every
+# record shout for good, on a port this file's own docstring calls open on the LAN.
+# 100 a duck is roughly fifty times the real rate and still stops that dead.
+MAX_POINTS_PER_DUCK = 100          # a round result is ~400 bytes; anything larger is junk
 TOKEN_HEADER = "X-Duckhunt-Key"
 PAGE_NAME = "board.html"  # the browser board, served at /
 
@@ -63,6 +71,15 @@ def validate(body: dict) -> dict:
     """Everything that goes in the table, checked — the port is open on the LAN.
 
     A junk row on the board is forever, so a bad run is a 400 and is not stored.
+
+    `score`, `dog_hits` and `crosshair` are optional, and that is deliberate: a
+    game that has not been updated yet posts without them, and the day the board
+    starts answering 400 to the cabinet in the other room is the day an evening
+    of rounds is lost. Missing means the old rule — a duck was a point, nothing
+    cost anything, and nobody counted the dog — so the score falls back to the
+    hits. A score is NOT clamped at zero: a round that fired forty times for
+    three ducks genuinely went below it, and hiding that would make the board
+    lie about how hard aiming is.
     """
     if not isinstance(body, dict):
         raise Rejected("body must be a JSON object")
@@ -86,9 +103,25 @@ def validate(body: dict) -> dict:
         raise Rejected("hits cannot exceed the ducks in the round")
     if not 0 <= duration < 24 * 3600:
         raise Rejected("duration must be a sane number of seconds")
+    try:
+        score = int(body.get("score", hits))
+        dog_hits = int(body.get("dog_hits", 0))
+    except (TypeError, ValueError):
+        raise Rejected("score and dog_hits must be whole numbers")
+    # a duck and the dog each cost a shot, so this is the real invariant: a
+    # one-shot round cannot have hit both
+    if not 0 <= dog_hits <= shots - hits:
+        raise Rejected("dog_hits must be between 0 and the shots that missed")
+    if abs(score) > MAX_POINTS_PER_DUCK * ducks:
+        # deliberately not clamped at zero in the other direction: a round really
+        # can finish at -35, and hiding the worst round of the evening would cost
+        # the board half its entertainment
+        raise Rejected("score is not a plausible number of points")
     settings = body.get("settings")
     return {"run_uuid": run_uuid.lower(), "name": name,
             "hits": hits, "shots": shots, "ducks": ducks, "duration": duration,
+            "score": score, "dog_hits": dog_hits,
+            "crosshair": bool(body.get("crosshair", False)),
             "started_at": _iso(body.get("started_at"), "started_at"),
             "finished_at": _iso(body.get("finished_at"), "finished_at"),
             "client_id": str(body.get("client_id", "unknown"))[:64],
@@ -191,6 +224,14 @@ class Handler(BaseHTTPRequestHandler):
                                                     q.get("order", ["best"])[0])})
                 elif url.path == "/api/stats":
                     self._send({"ok": True, **store.stats(conn, ducks)})
+                elif url.path == "/api/players":
+                    # the name entry, asking who is already here. Not scoped to
+                    # `ducks`: see store.search_players for why a name outlives
+                    # the round size it was first typed in.
+                    term = q.get("q", [""])[0][:store.NAME_MAX]
+                    self._send({"ok": True, "q": term,
+                                "rows": store.search_players(conn, term,
+                                                             num("limit", 8))})
                 elif url.path.startswith("/api/player/"):
                     name = unquote(url.path[len("/api/player/"):])
                     if not name:
@@ -216,7 +257,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = store.insert_run(conn, run)
             when = run["finished_at"][11:19]
             acc = run["hits"] / run["shots"] * 100 if run["shots"] else 0
-            log(f"{when}  {run['name']:<12} {run['hits']:>3}/{run['ducks']:<4} "
+            log(f"{when}  {run['name']:<12} {run['score']:>4} pts  "
+                f"{run['hits']:>3}/{run['ducks']:<4} "
                 f"{acc:>3.0f}%  {run['duration']:>4.0f}s  "
                 f"rank {result.get('rank')}"
                 f"{'  (duplicate, not stored twice)' if result['duplicate'] else ''}")

@@ -30,14 +30,13 @@ from dataclasses import replace
 
 from blessed import Terminal
 
-from duckhunt.core import player, scores
 from duckhunt.core.config import LeaderboardSettings
 from duckhunt.core.config import load as load_settings
 from duckhunt.frontends.terminal import TerminalFrontend
 from duckhunt.input.base import AimState, InputSource
 from duckhunt.input.keyboard import KeyboardInput
-from duckhunt.net.leaderboard_client import LeaderboardClient
-from duckhunt.net.leaderboard_client import payload as board_payload
+
+PRACTICE_NAME = "practice.toml"      # what --practice is a shortcut for
 
 LEADERBOARD_ENV = "DUCKHUNT_LEADERBOARD"
 
@@ -66,8 +65,6 @@ def main() -> None:
                     help="light gun on the ESP32 bridge, e.g. /dev/tty.usbserial-0001 "
                          "(press SYNC on the remote if it is not paired yet)")
     ap.add_argument("--baud", type=int, default=115200)
-    ap.add_argument("--wiimote", action="store_true",
-                    help="read the Wii Remote directly over Bluetooth (needs hidapi + WiimotePair)")
     ap.add_argument("--udp", nargs="?", const=4210, type=int, metavar="PORT",
                     help="receive data from the ESP32 bridge over Wi-Fi/UDP (Path B, port 4210)")
     ap.add_argument("--pygame", action="store_true",
@@ -89,9 +86,15 @@ def main() -> None:
                          "four IR beacons to (TAB toggles them in game)")
     ap.add_argument("--settings", metavar="FILE",
                     help="settings file (settings.toml in the project root by default)")
+    ap.add_argument("--practice", action="store_true",
+                    help="ten slow ducks, one in the air at a time, the crosshair "
+                         "on and nothing sent to the board — for handing the gun "
+                         "to someone who has never held one. practice.toml laid "
+                         "over the settings, so the gun keeps its sight-in")
     ap.add_argument("--player", metavar="NAME",
-                    help="who is shooting: skips the question after the round, "
-                         "for an evening of rounds without typing")
+                    help="who is shooting: pre-fills the question the pixel "
+                         "frontend asks after the round, for an evening of rounds "
+                         "without typing")
     ap.add_argument("--leaderboard", metavar="URL",
                     help="send every round to the scoreboard at URL (overrides "
                          "[leaderboard] in settings.toml, and DUCKHUNT_LEADERBOARD)")
@@ -99,7 +102,7 @@ def main() -> None:
                     help="do not send this session's rounds anywhere")
     args = ap.parse_args()
 
-    settings = load_settings(args.settings)
+    settings = load_settings(args.settings, practice_overlay(args))
     settings = with_leaderboard(settings, args)
     print(f"Settings: {settings.summary()}\n(change them in settings.toml)")
 
@@ -108,15 +111,11 @@ def main() -> None:
     if args.udp:
         from duckhunt.input.udp_gun import UdpGunInput
         gun = UdpGunInput(args.udp)
-    elif args.wiimote:
-        from duckhunt.input.wiimote import WiimoteInput
-        gun = WiimoteInput()
     elif args.serial:
         from duckhunt.input.serial_gun import SerialGunInput
         gun = SerialGunInput(args.serial, args.baud)
 
-    source_name = ("udp" if args.udp else "wiimote" if args.wiimote
-                   else "serial" if args.serial else None)
+    source_name = ("udp" if args.udp else "serial" if args.serial else None)
 
     # ---- pixel frontend (pygame) ----
     if args.pygame:
@@ -157,9 +156,15 @@ def main() -> None:
         pass
     finally:
         source.close()
+    # A keyboard round is not a record and the board is never told about one: this
+    # frontend draws a `+` at the aim point and the arrow keys move it, so the mark
+    # IS the aiming, the way the crosshair is for the mouse. There is nothing to ask
+    # a name for, so it is not asked — see leaderboard_client.refusal(). Said before
+    # the result rather than after it, because the result ends with goodbye.
+    print("\nA keyboard round does not go to the board: the `+` is the aiming, and\n"
+          "the board measures one thing — the gun, shot down its sights. Play with\n"
+          "--pygame --serial PORT for that.")
     print_result(game.world)
-    record_round(game.world, settings, args.player,
-                 source_name or "keyboard")
 
 
 def with_leaderboard(settings, args):
@@ -178,45 +183,37 @@ def with_leaderboard(settings, args):
     return replace(settings, leaderboard=lb)
 
 
-def record_round(w, settings, name: str | None, source_name: str) -> None:
-    """Ask who was shooting, keep the round, send the row. The ASCII path's turn.
+def practice_overlay(args) -> str | None:
+    """`practice.toml`'s path when `--practice` was given, else None.
 
-    The pixel frontend asks this on its own results screen; here the round ends
-    with the terminal back to normal, so it is a plain prompt. Either way the name
-    is asked AFTER the round and the row goes to the board — which is a process on
-    a screen of its own, and nothing of it is printed here.
+    A mode is a file laid OVER the settings rather than a file instead of them:
+    `practice.toml` says the four numbers that make a round practice and inherits
+    everything else, hardware included. That distinction is the whole safety of it
+    — the sight-in, the beacon rectangle and the lead were measured on one gun over
+    three evenings, and a mode that replaced them would hand the beginner the one
+    gun in the house that is not aimed at anything. It layers over `--settings` too,
+    for the same reason.
     """
-    if w.shots == 0 and w.hits == 0 and not w.stopped:
-        return                        # nothing happened; nothing to sign
-    remembered = player.load()
-    if not name:
-        prompt = (f"Who was shooting? [{remembered}] " if remembered
-                  else "Who was shooting? (Enter to skip) ")
-        try:
-            name = input(prompt).strip() or remembered
-        except (EOFError, KeyboardInterrupt):
-            name = ""
-    if not name:
-        print("not recorded.")
-        return
-    name = name[:scores.NAME_MAX]
-    player.save(name)
-    if scores.qualifies(scores.load(), w.hits, w.shots):
-        scores.add(scores.from_world(w, name))
-    board = LeaderboardClient(settings.leaderboard)
-    if not board.enabled:
-        return
-    board.submit(board_payload(w, name, settings.leaderboard.client_id, source_name))
-    board.close()
-    print({"sent": f"{name}: on the board.",
-           "queued": f"{name}: saved locally — it will reach the board on the "
-                     f"next launch."}.get(board.state, ""))
+    if not args.practice:
+        return None
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, PRACTICE_NAME)
+    if not os.path.exists(path):
+        # Falling back to the base settings here would be the exact inverse of
+        # what the flag promises: forty ducks at full speed, a magazine to run
+        # out of, and the round posted as a record — handed to somebody who has
+        # never held the gun. Better to refuse and say which file is missing.
+        sys.exit(f"{PRACTICE_NAME} is missing, so --practice has nothing to play. "
+                 f"Expected it at {path}")
+    return path
 
 
 def print_result(w) -> None:
     """Print the round result. The board itself lives on its own screen."""
-    print(f"\nResult: {w.hits} of {w.total} ducks "
-          f"({w.accuracy:.0f}% accuracy, {w.shots} shots). Bye! 🦆")
+    ammo = "" if w.ammo < 0 else f", {w.ammo} left in the magazine"
+    dog = "" if not w.dog_hits else f", and the dog {w.dog_hits}×"
+    print(f"\nResult: {w.score} points — {w.hits} of {w.total} ducks "
+          f"({w.accuracy:.0f}% accuracy, {w.shots} shots{ammo}{dog}). Bye! 🦆")
 
 
 if __name__ == "__main__":

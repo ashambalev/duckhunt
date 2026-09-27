@@ -30,6 +30,11 @@ class DuckSettings:
     speed_max: float = 0.55    # and the fastest; each duck gets a random one between
     bob: float = 0.12          # vertical drift, ± fraction of screen per second
     fall_speed: float = 0.7    # falling speed of a downed duck
+    # How many ducks may be on screen at once. 0 — as many as the pace launches,
+    # which is the scored round. 1 makes the next duck wait for the last one to
+    # be gone, which is the whole difference of a practice round: one duck, in
+    # the air, until it is dealt with.
+    max_alive: int = 0
     # The strip the ducks are allowed to fly in, measured from the TOP of the
     # picture: 0.90 keeps them in the top 90 %, so the bottom tenth (the grass,
     # where the dog is) stays clear. A duck is spawned inside this strip and
@@ -41,7 +46,13 @@ class DuckSettings:
 class RoundSettings:
     ducks: int = 100           # ducks per round (then the result and the score table)
     interval: float = 0.6      # pause between ducks, s: ducks × interval ≈ round length
-    points: int = 1            # points per duck shot down
+    # Shots in the magazine. 0 — unlimited, which is how the game played before
+    # firing cost anything. Otherwise the round ends when the ducks run out or
+    # the magazine does, whichever comes first.
+    ammo: int = 0
+    # Whether this round is offered to the leaderboard at all. A practice round
+    # is not: it is for handing the gun to someone who has never held one.
+    scored: bool = True
     speedup: float = 1.0       # factor the pause shrinks by after each duck
     min_interval: float = 0.5  # the pace stops growing once the pause hits this
     # Seconds between "start" and the first duck. The round does not begin on its
@@ -177,6 +188,20 @@ class GunSettings:
     # thing to do forever, so it stops here. The crosshair then holds a bounded
     # distance ahead of the last thing the gun said instead of sailing off.
     lead_max: float = 0.06
+    # Whether the crosshair is drawn when the round starts. It is not a cosmetic
+    # setting any more: a scored round is shot down the sights, and one that had
+    # the crosshair on at any point is not offered to the leaderboard. C (or A on
+    # the remote) still flips it mid-round — it just costs the record.
+    #
+    #   "auto" — off when a gun is plugged in, on for the mouse. A mouse has no
+    #            front sight to aim down, so there the crosshair IS the aiming and
+    #            turning it off would leave nothing to play with; those rounds are
+    #            therefore never records, which is the honest answer rather than a
+    #            special case.
+    #   "off"  — always down the sights. Every round can be a record.
+    #   "on"   — always drawn, and nothing is ever offered to the board. What
+    #            practice.toml uses.
+    crosshair: str = "auto"
     frame: str = "display"     # "picture" (LEDs on the picture) or "display" (on the screen)
     beacon_w: float = 1.0      # rectangle width, in widths of that frame
     beacon_h: float = 1.0      # rectangle height, in heights of that frame
@@ -201,9 +226,24 @@ class LeaderboardSettings:
 
 
 @dataclass(frozen=True)
+class ScoreSettings:
+    """What a shot is worth.
+
+    Counting only the ducks made every shot free, so the way to a better score
+    was to hold the trigger down. A miss costing a point is what makes aiming
+    the game. The score may go negative and is shown negative: clamping it at
+    zero would only hide that the round went badly.
+    """
+    duck: int = 2              # a duck downed (this used to be [round] points = 1)
+    miss: int = -1             # a shot that hit nothing
+    dog: int = -5              # a shot that hit the dog. He is on your side.
+
+
+@dataclass(frozen=True)
 class Settings:
     duck: DuckSettings = DuckSettings()
     round: RoundSettings = RoundSettings()
+    score: ScoreSettings = ScoreSettings()
     dog: DogSettings = DogSettings()
     scene: SceneSettings = SceneSettings()
     gun: GunSettings = GunSettings()
@@ -215,6 +255,9 @@ class Settings:
         d, r = self.duck, self.round
         return (f"{r.ducks} ducks, one every {r.interval:g} s "
                 f"(≈{r.ducks * r.interval:.0f} s round) · "
+                f"{f'{r.ammo} shots' if r.ammo else 'unlimited ammunition'}"
+                f"{f', {d.max_alive} at a time' if d.max_alive else ''}"
+                f"{'' if r.scored else ', practice (not for the board)'} · "
                 f"size {d.width:g}×{d.height:g} · "
                 f"speed {d.speed_min:g}–{d.speed_max:g} · "
                 f"background {self.scene.background}"
@@ -276,6 +319,9 @@ def _validated(s: Settings) -> Settings:
                                "speed_max": duck.speed_min})
     if duck.bob < 0:
         duck = DuckSettings(**{**duck.__dict__, "bob": abs(duck.bob)})
+    if duck.max_alive < 0:
+        _warn("[duck] max_alive cannot be negative — using 0 (no limit)")
+        duck = DuckSettings(**{**duck.__dict__, "max_alive": 0})
     # The ducks need a strip taller than a duck to fly in, or spawning has
     # nowhere to put them and the bounce has nothing to bounce off.
     if not 0 < duck.sky <= 1:
@@ -300,6 +346,9 @@ def _validated(s: Settings) -> Settings:
     if not 0 < rnd.speedup <= 1:
         _warn("[round] speedup must be in the range (0, 1] — using the default")
         fixes["speedup"] = base.speedup
+    if rnd.ammo < 0:
+        _warn("[round] ammo cannot be negative — using 0 (unlimited)")
+        fixes["ammo"] = 0
     if fixes:
         rnd = RoundSettings(**{**rnd.__dict__, **fixes})
 
@@ -337,6 +386,10 @@ def _validated(s: Settings) -> Settings:
         _warn(f'[gun] frame must be "display" or "picture", not {gun.frame!r} — '
               "using the default")
         fixes["frame"] = gbase.frame
+    if gun.crosshair not in ("auto", "on", "off"):
+        _warn(f'[gun] crosshair must be "auto", "on" or "off", not '
+              f"{gun.crosshair!r} — using the default")
+        fixes["crosshair"] = gbase.crosshair
     for name in ("spread", "lead", "lead_max"):
         if getattr(gun, name) < 0:
             _warn(f"[gun] {name} cannot be negative — using 0")
@@ -388,8 +441,8 @@ def _validated(s: Settings) -> Settings:
                                     "timeout": LeaderboardSettings().timeout})
 
     # whether such a background exists is the frontend's business, not this module's
-    return Settings(duck=duck, round=rnd, dog=dog, scene=scene, gun=gun, sound=snd,
-                    leaderboard=lb)
+    return Settings(duck=duck, round=rnd, score=s.score, dog=dog, scene=scene,
+                    gun=gun, sound=snd, leaderboard=lb)
 
 
 def default_path() -> str:
@@ -398,20 +451,49 @@ def default_path() -> str:
     return os.path.join(here, "..", "..", SETTINGS_NAME)
 
 
-def load(path: str | None = None) -> Settings:
-    """Read the settings. Missing or broken file gives the defaults."""
-    path = path or os.environ.get(SETTINGS_ENV) or default_path()
-    if not os.path.exists(path):
-        return Settings()
+def _read(path: str) -> dict | None:
+    """The TOML in `path` as a dict, or None if it cannot be read."""
     try:
         with open(path, "rb") as f:
-            data = tomllib.load(f)
+            return tomllib.load(f)
     except (tomllib.TOMLDecodeError, OSError) as exc:
-        _warn(f"could not be read ({exc}) — playing with the default values")
+        _warn(f"{os.path.basename(path)} could not be read ({exc}) — ignoring it")
+        return None
+
+
+def load(path: str | None = None, overlay: str | None = None) -> Settings:
+    """Read the settings. Missing or broken file gives the defaults.
+
+    `overlay` is a second file laid on top of the first, key by key inside each
+    section — which is what a *mode* is. `--practice` must not be a whole settings
+    file of its own: the sight-in, the beacon rectangle, the lead and the serial
+    port were measured on one gun on one screen over three evenings, and a mode
+    file that replaced them would hand a first-timer the one gun in the house that
+    is not aimed at anything. So a mode says the four numbers that make it a mode
+    and inherits every other one, hardware included.
+    """
+    path = path or os.environ.get(SETTINGS_ENV) or default_path()
+    data = _read(path) if os.path.exists(path) else {}
+    if data is None:
+        data = {}
+    if overlay:
+        over = _read(overlay) if os.path.exists(overlay) else None
+        if over is None:
+            _warn(f"{os.path.basename(overlay)} is missing — playing the base round")
+        else:
+            merged = {k: dict(v) if isinstance(v, dict) else v
+                      for k, v in data.items()}
+            for name, section in over.items():
+                if isinstance(section, dict) and isinstance(merged.get(name), dict):
+                    merged[name].update(section)
+                else:
+                    merged[name] = section
+            data = merged
+    if not data:
         return Settings()
 
     for key in data:
-        if key not in ("duck", "round", "dog", "scene", "gun", "sound",
+        if key not in ("duck", "round", "score", "dog", "scene", "gun", "sound",
                        "leaderboard", "spawn"):
             _warn(f"unknown section [{key}] — skipped")
 
@@ -423,9 +505,17 @@ def load(path: str | None = None) -> Settings:
         for key in ("interval", "speedup", "min_interval"):
             rnd.setdefault(key, data["spawn"].get(key, RoundSettings().__dict__[key]))
 
+    # a duck used to be worth [round] points, before a miss cost anything and the
+    # dog could be shot; the value means the same thing, so old files still work
+    score = dict(data.get("score", {}))
+    if "points" in rnd:
+        _warn("[round] points is now [score] duck — move it there")
+        score.setdefault("duck", rnd.pop("points"))
+
     return _validated(Settings(
         duck=_section(DuckSettings, data.get("duck", {}), "duck"),
         round=_section(RoundSettings, rnd, "round"),
+        score=_section(ScoreSettings, score, "score"),
         dog=_section(DogSettings, data.get("dog", {}), "dog"),
         scene=_section(SceneSettings, data.get("scene", {}), "scene"),
         gun=_section(GunSettings, data.get("gun", {}), "gun"),

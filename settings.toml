@@ -14,6 +14,25 @@
 #
 # The file can be deleted — these same values are then used as defaults.
 # A different set: python3 main.py --pygame --settings hard.toml
+#
+# WHERE THINGS ARE. The file is 330 lines, most of it comments, so here is the map
+# — the game first, the machine last:
+#
+#   [round]       how long a round is, and how much ammunition it gives you
+#   [score]       what a duck, a miss and the dog are worth
+#   [duck]        size, speed, how many may be up at once, the strip they fly in
+#   [dog]         his size, his band of grass, how long he pops up for
+#   [scene]       background, fullscreen, which display, how the picture is fitted
+#   [sound]       the shot, the quack, the laugh
+#   [gun]         two different things, fenced apart inside the section:
+#                   the FEEL   — spread, crosshair, lead, lead_max
+#                   the RIG    — frame, beacon_w/h/cx/cy: where the LEDs are taped
+#   [leaderboard] where the scoreboard is, if there is one
+#
+# The `[gun]` rig block is the only part that is about a particular room: it is
+# what changes when the beacons move to another screen, and nothing else here has
+# to change with it. A practice round is a short file laid over this one — see
+# practice.toml — so a mode never has to repeat any of the above.
 
 [round]
 # A round is `ducks` ducks; when the flock is gone you get the result and the
@@ -23,7 +42,16 @@
 ducks = 40           # ducks per round
 interval = 0.9        # pause between launches, seconds
 
-points = 1            # points per duck downed: 1 point = 1 duck
+# Shots in the magazine. The round ends when the ducks run out or the magazine
+# does, whichever comes first — the shot that empties it still counts, and a duck
+# already falling still lands. 0 is unlimited, which is how this played before
+# firing cost anything, and is what practice.toml goes back to.
+ammo = 40
+
+# Whether the round is offered to the leaderboard at all. practice.toml turns this
+# off: a round played by somebody who has never held the gun is not a record.
+scored = true
+
 speedup = 0.99         # 1.0 — a steady pace all round; 0.99 — speeds up towards the end
 min_interval = 0.5    # the pace stops growing once the pause gets this short
 
@@ -32,6 +60,15 @@ min_interval = 0.5    # the pace stops growing once the pause gets this short
 # trigger (SPACE works too), then this counts down, and that is true of the first
 # round of the session and of every "play again" after it. 0 starts immediately.
 countdown = 3.0
+
+[score]
+# What a shot is worth. Counting only the ducks made every shot free, so the way
+# to a better score was to hold the trigger down; a miss costing a point is what
+# makes aiming the game. The score may go negative and is shown negative —
+# clamping it at zero would only hide that the round went badly.
+duck = 2              # a duck downed
+miss = -1             # a shot that hit nothing
+dog = -5              # a shot that hit the dog. He is on your side, and he remembers.
 
 [duck]
 # Duck size. This is both the hitbox (used for hit detection) and the sprite size:
@@ -47,6 +84,12 @@ speed_max = 0.65      # and the fastest
 
 bob = 0.12            # vertical drift, ± fraction of screen per second
 fall_speed = 0.7      # how fast a downed duck falls, fraction of screen per second
+
+# How many ducks may be on screen at once. 0 — as many as `interval` launches,
+# which is this round: a sky with four ducks in it. 1 makes the next duck wait
+# until the last one is gone, which is practice.toml and the only thing in it
+# that is a different mechanic rather than a different number.
+max_alive = 0
 
 # The strip the ducks fly in, measured from the TOP of the picture: 0.90 keeps
 # them in the top 90 %, so the bottom tenth — the grass, where the dog is — stays
@@ -175,6 +218,22 @@ shot_on_hit = true
 # This one applies to the mouse as well.
 spread = 0.02
 
+# Whether the crosshair is drawn when the round starts — not a cosmetic setting
+# any more. A scored round is shot DOWN THE SIGHTS: put the front sight on the
+# duck, pull, and the screen tells you where it went. A round that had the
+# crosshair up at any point is still played and still scored on screen, it is
+# simply never offered to the leaderboard, and the results screen says so. C (or
+# A on the remote) still flips it mid-round; it just costs the record, and
+# flipping it back off does not buy it back.
+#
+#   "auto" — off when a gun is plugged in, on for the mouse. A mouse has no front
+#            sight to aim down, so there the crosshair IS the aiming; those rounds
+#            are therefore never records, which beats pretending a mouse and a
+#            light gun are the same game.
+#   "off"  — always down the sights, mouse included.
+#   "on"   — always drawn, and nothing is ever offered to the board.
+crosshair = "auto"
+
 # Seconds of aim to extrapolate ahead, to hide the link's own delay. The chain
 # costs ~40-55 ms: the remote reports every ~10 ms, the radio adds its own, the
 # game reads the port once a frame, and that frame is shown at the next vsync —
@@ -220,10 +279,17 @@ lead = 0.035
 # it buys is 0.1 % of mean error against 2.3 % more overshoot, so no.
 lead_max = 0.035
 
+# ===========================================================================
+# THE RIG — everything above this line is how the game feels, everything below
+# is where the hardware physically is. This is the only part of the file that is
+# about one room: change it when the beacons move to another screen, and nothing
+# else here has to change with it. `tools/ir_view.py --bezel` works the numbers
+# out for you; `--align` (or TAB in game) draws where to tape them.
+# ===========================================================================
+#
 # The rest is the light gun only (the mouse ignores it). The firmware solves the
 # four-beacon homography and reports where the barrel points INSIDE THE BEACON
-# RECTANGLE,
-# 0..1 along its own two axes. This section says what that rectangle is against
+# RECTANGLE, 0..1 along its own two axes. This section says what that rectangle is against
 # the game — the one thing that changes when the LEDs move to another screen, so
 # it lives here and not in the firmware (no reflash to swap monitor for TV).
 # Keep the firmware's own BEACON_CX/CY/W/H at 0.5/0.5/1.0/1.0.

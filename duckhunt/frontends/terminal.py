@@ -78,8 +78,12 @@ class TerminalFrontend:
 
         lines = ["".join(row) for row in grid]
         w = self.world
-        hud = (f" 🦆 HIT {w.hits}   DUCK {w.released}/{w.total}   "
-               f"{w.accuracy:3.0f}% ACC   [arrows/WASD aim · SPACE fire · Q quit] ")
+        # the score leads here for the same reason it does in the pixel frontend:
+        # it is no longer the hit count, and a miss costs a point
+        ammo = "" if w.ammo < 0 else f"AMMO {w.ammo}   "
+        hud = (f" 🦆 SCORE {w.score}   HIT {w.hits}   DUCK {w.released}/{w.total}   "
+               f"{ammo}{w.accuracy:3.0f}% ACC   "
+               f"[arrows/WASD aim · SPACE fire · Q quit] ")
         hud = hud[:width].ljust(width)
         return t.home + "\n".join(lines) + "\n" + t.reverse(hud)
 
@@ -102,7 +106,15 @@ class TerminalFrontend:
                 self._sy += SMOOTH_ALPHA * (state.y - self._sy)
                 state.x, state.y = self._sx, self._sy
 
-                self.world.update(dt, state.x, state.y, state.fire)
+                # crosshair=True, always: this frontend draws a `+` at the aim
+                # point and there is nothing else here to aim with — the arrow keys
+                # move that mark, so it IS the aiming, the way it is for the mouse.
+                # `refusal()` therefore keeps an ASCII round off the leaderboard,
+                # which is the same answer the mouse gets and the reason both
+                # frontends can be said to agree about the rule at all. The round is
+                # still played and still scored on screen.
+                self.world.update(dt, state.x, state.y, state.fire,
+                                  crosshair=True)
                 print(self.render(state), end="", flush=True)
                 if self.world.finished:      # the flock is gone — round over
                     break
