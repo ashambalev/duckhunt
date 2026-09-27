@@ -24,6 +24,7 @@ import tomllib
 from collections import deque
 
 from ..core import calibration as calib_core
+from ..core import modes as modes_core
 from ..core import player
 from ..core.models import DuckState, Facing
 from ..core.world import World
@@ -177,15 +178,23 @@ DOG_LAUGH = [
     "......KTK...KTK.....",
 ]
 
+# The row that names the rounds. It is filled in per session from the modes there
+# actually are, and left out of the keymap altogether when there is only one
+# round on the disk — a control that does nothing is worse than no control at
+# all. Kept out here so `run()` can recognise it by identity.
+MODE_ROW = ("M · A on the title", "which round — %s")
+
 # The controls, in one place: shown on the title screen and on the result screen,
 # because a player standing three metres away with a gun in both hands has no
 # way to look them up. Remote buttons are named first where there is one — that is
-# the control they actually have in their hands.
+# the control they actually have in their hands. The mode comes second because it
+# is the other thing the title screen is for: which round, and then start it.
 KEYMAP = [
     ("TRIGGER · SPACE", "start the round, and shoot in it"),
+    MODE_ROW,
     ("ESC", "stop the round — the score still counts"),
     ("Q", "quit Duck Hunt"),
-    ("A (remote) · C", "show / hide the crosshair"),
+    ("C · A in a round", "show / hide the crosshair"),
     ("B", "next background"),
     ("TAB", "corner targets for the IR beacons"),
     ("G", "the gun's report rate and dropouts"),
@@ -583,12 +592,34 @@ def _pick_background(backgrounds, wanted):
 class PygameFrontend:
     def __init__(self, settings=None, align=False, log_gun=False,
                  calibrate=False, use_calibration=True, player_name="",
-                 source_name=None):
+                 source_name=None, modes=None, mode=0):
+        # The rounds the title screen cycles between, and which of them this
+        # session opens on. A mode may only change the round and never the rig
+        # (core/modes.py), which is the whole reason this is a list here rather
+        # than a flag back in main: the window, the sight-in, the beacons and the
+        # board are the same in all of them, so switching costs a new World and
+        # a re-sized duck instead of a restart.
+        self.modes = list(modes) if modes else []
+        self.mode_index = min(max(mode, 0), len(self.modes) - 1) if self.modes else 0
+        if self.modes:
+            settings = self.modes[self.mode_index].settings
         self.world = World(settings=settings)
-        # The name the round is sent to the board under. --player pre-fills it;
-        # otherwise the last one typed on this machine does (player.json), so a
-        # repeat player only has to press Enter.
-        self.player_name = player_name or player.load()
+        if not self.modes:
+            # Called with plain settings (the tests, and anyone embedding this):
+            # one unnamed round, nothing to switch to, and the title screen says
+            # neither more nor less than it did before modes existed.
+            self.modes = [modes_core.Mode(modes_core.BASE_NAME,
+                                          modes_core.BASE_NOTE, None,
+                                          self.world.settings)]
+        # The name the round is sent to the board under. Empty unless --player
+        # says who is shooting tonight: the field after a round starts blank.
+        # It used to be pre-filled with the last name typed on this machine,
+        # which is the wrong default in the only room this game is played in —
+        # the next player finishes a round, the previous player's name is
+        # already in the field, and one pull of A signs their round to somebody
+        # else. What is offered instead is the list: type a letter, or pull the
+        # trigger, and the names already on the board come up to be taken.
+        self.player_name = player_name
         # which of the gun paths is in use — goes into the row, for reading the
         # board back later and asking "which cabinet was this"
         self.source_name = source_name
@@ -925,9 +956,26 @@ class PygameFrontend:
         # the countdown digit: as big as the picture can carry, so it reads from
         # across the room with a gun in your hands
         huge = pygame.font.SysFont("Menlo,monospace", max(60, H // 4), bold=True)
-        # the keymap is eight rows wide, so it is measured to fit rather than set
-        # at a fixed size — and it has to fit inside the score panel too (0.86 W)
-        km_font = _fit_font(pygame, KEYMAP, int(W * 0.80))
+        # The keymap this session actually has. The mode row names the rounds
+        # that were found on disk rather than a fixed pair, and goes away when
+        # there is only one of them — a control that does nothing is worse than
+        # no control at all.
+        names = [m.name.lower() for m in self.modes]
+        listed = " / ".join(names[:3]) + ("…" if len(names) > 3 else "")
+        keymap = []
+        for row in KEYMAP:
+            if row is not MODE_ROW:
+                keymap.append(row)
+            elif len(self.modes) > 1:
+                keymap.append((row[0], row[1] % listed))
+        # the keymap is a dozen rows wide, so it is measured to fit rather than
+        # set at a fixed size — and it has to fit inside the score panel too
+        km_font = _fit_font(pygame, keymap, int(W * 0.80))
+        # ... and the line under the mode's name on the title screen. Measured
+        # across EVERY mode's note, not just the one showing, so the sentence
+        # does not change size as the modes are cycled.
+        note_font = _fit_font(pygame, [(m.note.upper(), "") for m in self.modes]
+                              or [("", "")], int(W * 0.80), biggest=18)
         # ... and the name screen's own two lines, measured against the same
         # 0.80 W, which is exactly the width inside its panel
         sug_font = _fit_font(pygame, [(NAME_NOTE, ""), (NAME_HINT, "")],
@@ -1013,8 +1061,8 @@ class PygameFrontend:
             right and runs the longest row off the edge.) Returns the y it
             finished at."""
             gap = max(4, W // 200)
-            keys = [km_font.render(k, True, key_ink) for k, _ in KEYMAP]
-            acts = [km_font.render(a, True, text_ink) for _, a in KEYMAP]
+            keys = [km_font.render(k, True, key_ink) for k, _ in keymap]
+            acts = [km_font.render(a, True, text_ink) for _, a in keymap]
             kw = max(i.get_width() for i in keys)
             aw = max(i.get_width() for i in acts)
             x0 = (W - (kw + 2 * gap + aw)) // 2
@@ -1101,7 +1149,7 @@ class PygameFrontend:
             # early stop are there, and the block of names — and never taller
             # than the picture, nor shorter than it has always been.
             tall = 0.84
-            km_block = len(KEYMAP) * (km_font.get_height() + 2)
+            km_block = len(keymap) * (km_font.get_height() + 2)
             if mode == "name":
                 block = (2 * sug_font.get_height() + 4 + int(H * 0.02)
                          + len(shown) * (font.get_height() + 2)) if shown else 0
@@ -1262,7 +1310,6 @@ class PygameFrontend:
                 # break it, which is exactly why the check is here as well.
                 return
             name = (name.strip() or "PLAYER")[:player.NAME_MAX]
-            player.save(name)
             board.submit(board_payload(self.world, name,
                                        settings.leaderboard.client_id,
                                        self.source_name))
@@ -1280,8 +1327,10 @@ class PygameFrontend:
         DOG_START_X = -float(dog_walk[0].get_width())
         dog_x = DOG_START_X
         name_buf = self.player_name
-        # the remembered name is offered, not imposed: the first character typed
-        # replaces it whole, so a new player does not have to backspace it out
+        # A --player name is offered, not imposed: the first character typed
+        # replaces it whole, so a new player does not have to backspace it out.
+        # Without --player the field is simply empty, and "fresh" then costs
+        # nothing — there is nothing in it to replace.
         name_fresh = True
         # What the board says about the name being typed: the rows on offer, which
         # of them is taken (-1 — none of them, the typed text stands), whether the
@@ -1292,20 +1341,6 @@ class PygameFrontend:
         sug_frozen = False
         typed_buf = name_buf
         typed_fresh = name_fresh
-
-        def note_crosshair():
-            """This round has had the crosshair up, whatever it does from here.
-
-            `World.update` latches this itself, but the title screen and the
-            countdown draw the crosshair without ever calling it — and those are
-            the two screens where peeking is easiest and most useful. Aim around
-            the title screen with the crosshair on, learn how far the front sight
-            sits from where the shot lands, press C, and every round after it would
-            otherwise pass as shot down the sights. The round the latch belongs to
-            is the one about to be played: entering the title screen builds a fresh
-            World, so nothing an earlier round did carries over.
-            """
-            self.world.crosshair_used = True
 
         def send_name():
             """Sign the round with what is in the field — ENTER, or A on the gun.
@@ -1455,6 +1490,48 @@ class PygameFrontend:
         lead_at = [lead_steps.index(round(gun.lead, 4))]
         prev_mouse_down = False
 
+        def next_mode(step=1):
+            """The next round in the list — the title screen's own control.
+
+            Only from the title screen, and that is not a technical limit: the
+            mode IS the round, so changing it builds the world the next round
+            will be played in, and doing that anywhere else would either throw
+            away a round in progress or rub out the result still being read.
+
+            What follows the mode is re-derived right here, and it is a short
+            list precisely because a mode may only change the round (see
+            core/modes.py): the world, the ducks' size, the HUD measured against
+            its own widest line, and whether the crosshair starts up. The
+            window, the background, the sounds, the beacon rectangle and the
+            sight-in belong to the room rather than to the round, and none of
+            them move.
+            """
+            nonlocal settings, gun, art, dog_walk, dog_catch, dog_laugh, hud_font
+            if len(self.modes) < 2:
+                return
+            self.mode_index = (self.mode_index + step) % len(self.modes)
+            mode_now = self.modes[self.mode_index]
+            settings = mode_now.settings
+            # A fresh world, so the title screen shows the round that is about to
+            # be played — its duck count, and a clean crosshair latch.
+            self.world = World(settings=settings)
+            gun = settings.gun
+            hide_cross[0] = (gun.crosshair == "off"
+                             or (gun.crosshair == "auto" and source is not None))
+            art = _load_sheet(pygame, assets_dir,
+                              int(settings.duck.width * W), dog_px_w,
+                              settings.dog.catch_scale) \
+                or _load_fallback(pygame, assets_dir, dog_px_w,
+                                  settings.dog.catch_scale)
+            dog_walk = art["dog_walk"]
+            dog_catch = art["dog_catch"]
+            dog_laugh = art["dog_laugh"]
+            hud_font = _fit_font(pygame, [(hud_text(
+                -99 * settings.round.ducks, settings.round.ducks,
+                settings.round.ducks, settings.round.ammo or -1,
+                999.0, 100.0), "")], W - 32)
+            print(f"{mode_now.name}: {settings.summary()}")
+
         if self.calibrate:
             run_calibrator()
 
@@ -1560,12 +1637,14 @@ class PygameFrontend:
                 elif e.key == pygame.K_b and backgrounds:
                     bg_index = (bg_index + 1) % len(backgrounds)
                     bg, GRASS_Y = use_background(bg_index)
+                elif e.key == pygame.K_m and mode == "intro":
+                    next_mode()
                 elif e.key == pygame.K_SPACE and mode == "intro":
                     mode, t_mode = "ready", 0.0
                 elif e.key == pygame.K_SPACE and mode == "over":
                     self.world = World(settings=settings)   # a new round
                     mode, t_mode, dog_x = "intro", 0.0, DOG_START_X
-                    name_buf, name_fresh = player.load() or self.player_name, True
+                    name_buf, name_fresh = self.player_name, True
                     last_landed = last_escaped = 0
                     pop_kind = None
 
@@ -1593,7 +1672,15 @@ class PygameFrontend:
                     crosshair[0], crosshair[1] = ahead
                 fire = st.fire
                 if st.pressed & 0x02:              # A on the remote
-                    if mode == "name":
+                    if mode == "intro" and len(self.modes) > 1:
+                        # The title screen is where the round is chosen, and the
+                        # player choosing it is three metres away with both
+                        # hands on the gun — so A is the mode here and the
+                        # crosshair everywhere else. There is no round yet to
+                        # peek in, and C still flips the crosshair from the
+                        # keyboard for anyone who wants to see it on this screen.
+                        next_mode()
+                    elif mode == "name":
                         # there is no crosshair to toggle on this screen, and
                         # there is one thing the gun cannot otherwise do: ENTER.
                         # The pull that may have come in the same frame is
@@ -1639,14 +1726,20 @@ class PygameFrontend:
                 # starts the next round
                 self.world = World(settings=settings)
                 mode, t_mode, dog_x, fire = "intro", 0.0, DOG_START_X, False
-                name_buf, name_fresh = player.load() or self.player_name, True
+                name_buf, name_fresh = self.player_name, True
                 last_landed = last_escaped = 0
                 pop_kind = None
 
             # ---- intro: the dog walks and sniffs ----
             if mode == "intro":
-                if not hide_cross[0]:
-                    note_crosshair()       # the easiest screen of all to peek on
+                # The crosshair is free on this screen and on the countdown: the
+                # round is judged from the first duck, by `World.update`, and
+                # nothing before it counts. These two screens used to latch it as
+                # well — peeking there is how you learn where the front sight
+                # sits against where the shot lands — but it made the one honest
+                # move look like the cheat: turn the crosshair on to check the
+                # gun is tracking, turn it off before the round, and the round
+                # you then shot down the sights was refused anyway.
                 draw_background()
                 dog_x += settings.dog.speed * W * dt
                 # the title screen waits for the trigger however long that takes,
@@ -1654,17 +1747,49 @@ class PygameFrontend:
                 if dog_x > W:
                     dog_x = DOG_START_X
                 draw_dog_walking(dog_x, t_mode)
-                y = int(H * 0.08)
+                mode_now = self.modes[self.mode_index]
+                # The title screen is laid out measured rather than at fixed
+                # gaps. Its two headlines are set in a fixed point size and the
+                # picture is not, so on a small window the block below them ran
+                # out through the bottom edge and took the last rows of the
+                # keymap with it. What gives way, in order: the mode's one-line
+                # note (the only line here that repeats what the name already
+                # says), and then the gaps between the blocks.
+                note_on = len(self.modes) > 1 and bool(mode_now.note)
+                lines = (2 * big.get_height() + font.get_height() + 2
+                         + len(keymap) * (km_font.get_height() + 2))
+                gaps = [H * 0.08, H * 0.02, H * 0.02, H * 0.03]
+                room = H - lines - int(H * 0.02)      # a little air at the foot
+                if note_on and room - note_font.get_height() < sum(gaps) / 2:
+                    note_on = False                   # too tight for both
+                if note_on:
+                    room -= note_font.get_height()
+                gap = [int(v * min(1.0, max(0.0, room / sum(gaps)))) for v in gaps]
+
+                y = gap[0]
                 draw_center("DUCK HUNT", big, y)
-                y += big.get_height() + int(H * 0.02)
+                y += big.get_height() + gap[1]
                 # blink it, so it reads as "waiting for you" rather than "stuck"
                 if int(t_mode * 2) % 2:
                     draw_center("PULL THE TRIGGER TO START", big, y, (255, 225, 90))
-                y += big.get_height() + int(H * 0.02)
-                draw_center(f"{self.world.total} DUCKS  ·  "
+                y += big.get_height() + gap[2]
+                # Which round is about to be played, on the line that already
+                # says how long it is: the mode is not a setting hidden in a
+                # file any more, it is the thing the next trigger pull picks.
+                head = (f"{mode_now.name}  ·  " if len(self.modes) > 1 else "")
+                draw_center(f"{head}{self.world.total} DUCKS  ·  "
                             f"{settings.round.countdown:g}s COUNTDOWN", font, y,
                             (255, 255, 240))
-                y += font.get_height() + int(H * 0.03)
+                y += font.get_height() + 2
+                if note_on:
+                    # what the mode's own file says it is, in its own words —
+                    # warm off-white rather than grey, because this line has no
+                    # panel behind it and grey on a bright sky is not something
+                    # you read from three metres away
+                    draw_center(mode_now.note.upper(), note_font, y,
+                                (252, 238, 195))
+                    y += note_font.get_height()
+                y += gap[3]
                 draw_keymap(y, shade=True)
                 draw_crosshair()
                 present()
@@ -1672,8 +1797,6 @@ class PygameFrontend:
 
             # ---- ready: the countdown, gun already up ----
             if mode == "ready":
-                if not hide_cross[0]:
-                    note_crosshair()
                 draw_background()
                 dog_x += settings.dog.speed * W * dt
                 if dog_x > W:

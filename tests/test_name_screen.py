@@ -5,8 +5,8 @@ these tests drive the real loop headlessly (dummy video/audio drivers) and read
 what it did off the one thing it actually hands out: the payload the board
 would have received. `pygame.event.get` is scripted frame by frame, the board
 and the name lookup are swapped for fakes that only ever live in this process,
-and `player.json` is stubbed at the point the frontend calls it, never touched
-on disk.
+and nothing is written next to `settings.toml` — the round's name goes to the
+fake board and nowhere else.
 
 Getting from the title screen to the name screen without playing a round out:
 ESC from "ready" ends the round early (`World.stop()`) exactly the way a player
@@ -148,9 +148,25 @@ def _fake_lookup(rows: list, asks: list | None = None) -> type:
     return FakeLookup
 
 
+class _SteadyClock:
+    """`pygame.time.Clock` with the wall clock taken out of it.
+
+    Two of these tests turn on the crosshair and then put it away *inside the
+    countdown*, which only works if a frame is a known length. The real Clock
+    measures one, so a loaded machine could run the countdown out before the key
+    that has to land in it — pinned at 16 ms, the frame count is the timeline.
+    """
+
+    def tick(self, fps=0):
+        return 16
+
+    def get_fps(self):
+        return 60.0
+
+
 def run_scripted(monkeypatch, frames, events=None, gun_frames=None, rows=ROWS,
                   player_name="ЖЕНЯ", countdown=3.0, world_factory=None,
-                  scored=True, asks=None, crosshair="off"):
+                  scored=True, asks=None, crosshair="off", shots=1):
     """Drive `PygameFrontend.run()` for exactly `frames` frames and report
     what got submitted to the board.
 
@@ -162,6 +178,13 @@ def run_scripted(monkeypatch, frames, events=None, gun_frames=None, rows=ROWS,
     tests want, since the mouse cannot press A. Frame `frames` and beyond get
     a QUIT event, which is what ends the loop — nothing here reaches into any
     of `run()`'s locals.
+
+    `shots` is the round's shot counter before the loop starts, and it is 1
+    because these tests reach the name screen by ESC rather than by playing a
+    flock out — so the round they stop has nothing in it, and a round nobody
+    fired a shot in is refused by `refusal()` and never gets a name screen at
+    all. That is a rule about the board, not about this screen; `shots=0` is for
+    the one test that is about the rule itself.
     """
     monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
     monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
@@ -181,16 +204,13 @@ def run_scripted(monkeypatch, frames, events=None, gun_frames=None, rows=ROWS,
     submitted: list[dict] = []
     monkeypatch.setattr(pygame_app, "LeaderboardClient", _fake_board(submitted))
     monkeypatch.setattr(pygame_app, "PlayerLookup", _fake_lookup(rows, asks))
-    # the one file finish_round() would otherwise write next to settings.toml
-    monkeypatch.setattr(pygame_app.player, "save", lambda *a, **k: None)
-    monkeypatch.setattr(pygame_app.player, "load", lambda *a, **k: "")
-
     frontend = PygameFrontend(
         settings=_settings(countdown=countdown, scored=scored,
                            crosshair=crosshair),
         player_name=player_name)
     if world_factory is not None:
         frontend.world = world_factory(frontend.world.settings)
+    frontend.world.shots = shots        # see the docstring: a round with a shot in it
 
     source = None
     if gun_frames is not None:
@@ -209,13 +229,31 @@ def run_scripted(monkeypatch, frames, events=None, gun_frames=None, rows=ROWS,
 
 # ---- the tests --------------------------------------------------------------
 
-def test_enter_on_the_remembered_name_submits_it_once(monkeypatch):
+def test_enter_on_a_player_name_submits_it_once(monkeypatch):
+    """`--player` is the one thing that puts a name in the field before anyone
+    types — one shooter, a whole evening, Enter after every round."""
     submitted = run_scripted(
         monkeypatch, frames=3,
         events={0: [SPACE], 1: [ESC], 2: [ENTER]},
         player_name="Стрелок")
     assert len(submitted) == 1
     assert submitted[0]["name"] == "Стрелок"
+
+
+def test_the_field_is_empty_without_player_and_enter_sends_nothing(monkeypatch):
+    """The round after somebody else's is not signed with their name.
+
+    Nothing is pre-filled any more — the field comes up blank and Enter on it
+    does nothing at all, so the pull of A that used to sign the round to
+    whoever played last now waits for a name to be chosen. The list is how it is
+    chosen: Tab (or the trigger) takes one off the board, and that is what gets
+    sent.
+    """
+    submitted = run_scripted(
+        monkeypatch, frames=6, player_name="",
+        events={0: [SPACE], 1: [ESC], 2: [ENTER], 3: [TAB], 4: [ENTER]})
+    assert len(submitted) == 1, "the empty-field Enter must not have sent anything"
+    assert submitted[0]["name"] == ROWS[0]["name"]
 
 
 def test_esc_on_the_name_screen_submits_nothing(monkeypatch):
@@ -308,19 +346,55 @@ def test_empty_board_makes_tab_and_trigger_no_ops_enter_still_sends(monkeypatch)
     assert submitted[0]["name"] == "Solo"
 
 
-def test_the_countdown_cannot_be_used_to_peek_and_still_claim_a_record(monkeypatch):
-    """The crosshair up during the countdown already costs the record.
+def test_the_crosshair_in_the_round_costs_the_record(monkeypatch):
+    """A record is shot down the sights, and the round is what is judged.
 
-    The countdown draws the crosshair but calls no `world.update()`, so the
-    latch that `update()` keeps would never have seen it — and three seconds of
-    watching where the barrel actually points is exactly the help the rule is
-    there to take away. With `crosshair = "on"` this round is refused before it
-    starts: no name screen, nothing asked of the board, nothing submitted.
+    `crosshair = "on"` with no countdown to wait out: the first duck is up with
+    the crosshair over it, `world.update()` latches that, and the round is
+    refused. No name screen, nothing asked of the board, nothing submitted.
     """
+    monkeypatch.setattr(pygame.time, "Clock", _SteadyClock)
     asks: list[str] = []
     submitted = run_scripted(
-        monkeypatch, frames=4, crosshair="on", asks=asks,
+        monkeypatch, frames=5, crosshair="on", countdown=0.0, asks=asks,
         events={0: [SPACE], 2: [ESC], 3: [ENTER]},
         player_name="Стрелок")
     assert submitted == []
     assert asks == []
+
+
+def test_a_round_with_no_shot_in_it_is_not_offered(monkeypatch):
+    """ESC on the countdown leaves no round, and no round is not a record.
+
+    It used to go to the board as `0/40`: an empty row, and one more attempt
+    against somebody's name. Nothing is asked and nothing is sent — the result
+    screen says why, the same way it does for practice and for the crosshair.
+    """
+    asks: list[str] = []
+    submitted = run_scripted(
+        monkeypatch, frames=4, shots=0, asks=asks,
+        events={0: [SPACE], 1: [ESC], 2: [ENTER]},
+        player_name="Стрелок")
+    assert submitted == []
+    assert asks == []
+
+
+def test_the_crosshair_switched_off_before_the_first_duck_leaves_a_record(monkeypatch):
+    """... and the countdown before it is not the round.
+
+    The crosshair is up while the countdown runs and **C** puts it away before
+    the first duck: what follows is a round shot down the sights, so it reaches
+    the name screen and goes to the board like any other. These two screens used
+    to latch it too, which meant the one honest move — turn the crosshair on to
+    see the gun is tracking, turn it off to play — read as the cheat.
+
+    `Clock.tick` is pinned so the frames are a known 16 ms and the 50 ms
+    countdown really does still have three of them left to press C in.
+    """
+    monkeypatch.setattr(pygame.time, "Clock", _SteadyClock)
+    submitted = run_scripted(
+        monkeypatch, frames=9, crosshair="on", countdown=0.05,
+        events={0: [SPACE], 1: [key(pygame.K_c, "c")], 6: [ESC], 7: [ENTER]},
+        player_name="Стрелок")
+    assert len(submitted) == 1, "the round was shot down the sights"
+    assert submitted[0]["name"] == "Стрелок"

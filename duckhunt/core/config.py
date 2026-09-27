@@ -21,6 +21,25 @@ from dataclasses import dataclass, fields
 SETTINGS_ENV = "DUCKHUNT_SETTINGS"
 SETTINGS_NAME = "settings.toml"
 
+# What a MODE may change, and nothing else. A mode is a file laid OVER
+# settings.toml (see `load`), and the reason it is an overlay rather than a
+# settings file of its own is that it must never touch the rig — so the rule is
+# written down here rather than left to whoever writes the next mode file:
+#
+#   [round] [duck] [score]   the round itself: how many, how fast, what a shot costs
+#   [gun] crosshair          the one key of [gun] that is the round and not the rig
+#   [mode]                   who the mode is — its name and its one line
+#
+# Everything else is the room and the machine: where the beacons are taped, how
+# far the gun shoots off them, which monitor, how loud, which board. Those are
+# measured once for this house, they are the same whichever round is being
+# played, and — since the title screen switches modes between rounds — several
+# of them could not follow a mode anyway: a window does not change size, and a
+# sight-in does not get re-measured, between two pulls of the trigger.
+MODE_SECTIONS = ("round", "duck", "score")
+MODE_GUN_KEYS = ("crosshair",)
+MODE_SECTION = "mode"
+
 
 @dataclass(frozen=True)
 class DuckSettings:
@@ -190,8 +209,11 @@ class GunSettings:
     lead_max: float = 0.06
     # Whether the crosshair is drawn when the round starts. It is not a cosmetic
     # setting any more: a scored round is shot down the sights, and one that had
-    # the crosshair on at any point is not offered to the leaderboard. C (or A on
-    # the remote) still flips it mid-round — it just costs the record.
+    # the crosshair on at any point of the round is not offered to the
+    # leaderboard. C (or A on the remote) still flips it mid-round — it just
+    # costs the record. The title screen and the countdown are not the round:
+    # turn it on there to check the gun is tracking, turn it off, and what you
+    # then shoot down the sights still counts.
     #
     #   "auto" — off when a gun is plugged in, on for the mouse. A mouse has no
     #            front sight to aim down, so there the crosshair IS the aiming and
@@ -266,8 +288,19 @@ class Settings:
                 f"{f' · board {self.leaderboard.url}' if self.leaderboard.enabled else ''}")
 
 
-def _warn(msg: str) -> None:
-    print(f"{SETTINGS_NAME}: {msg}", file=sys.stderr)
+# Every warning here is a fact about a FILE — "this key is not a number", "this
+# section is not a mode's to change" — so saying it twice says nothing new. It
+# would be said twice now that there is a list of modes: every mode reloads the
+# base file to lay its overlay over, and a typo in settings.toml would otherwise
+# be reported once per mode before the window even opens.
+_said: set[tuple[str, str]] = set()
+
+
+def _warn(msg: str, where: str = SETTINGS_NAME) -> None:
+    if (where, msg) in _said:
+        return
+    _said.add((where, msg))
+    print(f"{where}: {msg}", file=sys.stderr)
 
 
 def _section(cls, data: dict, name: str):
@@ -451,8 +484,12 @@ def default_path() -> str:
     return os.path.join(here, "..", "..", SETTINGS_NAME)
 
 
-def _read(path: str) -> dict | None:
-    """The TOML in `path` as a dict, or None if it cannot be read."""
+def read_toml(path: str) -> dict | None:
+    """The TOML in `path` as a dict, or None if it cannot be read.
+
+    Public because a mode's *name* is read out of the same file the numbers are
+    in — see `duckhunt.core.modes`.
+    """
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
@@ -461,40 +498,70 @@ def _read(path: str) -> dict | None:
         return None
 
 
+def _overlaid(data: dict, over: dict, where: str) -> dict:
+    """`over` laid on `data` key by key — but only where a MODE may reach.
+
+    The list is short on purpose (see MODE_SECTIONS). Anything else in a mode
+    file is refused out loud rather than applied: it would either un-aim the gun
+    or be a setting the title screen cannot honour halfway through an evening,
+    because a window does not change size between two rounds.
+    """
+    merged = {k: dict(v) if isinstance(v, dict) else v for k, v in data.items()}
+    for name, section in over.items():
+        if name == MODE_SECTION:
+            continue                      # what the mode is called, not a setting
+        if not isinstance(section, dict):
+            _warn(f"[{name}] is not a section — skipped", where)
+            continue
+        if name == "gun":
+            # [gun] is two things in one section — the FEEL and the RIG — and a
+            # mode owns exactly one key of it. The rest is where the beacons are
+            # taped and how far the gun shoots off them.
+            rig = [k for k in section if k not in MODE_GUN_KEYS]
+            for key in rig:
+                _warn(f"[gun] {key} is the rig, not the round — a mode cannot "
+                      f"change it; skipped", where)
+            section = {k: v for k, v in section.items() if k in MODE_GUN_KEYS}
+            if not section:
+                continue
+        elif name not in MODE_SECTIONS:
+            _warn(f"[{name}] is not a mode's to change — a mode is the round, "
+                  f"not the rig; skipped", where)
+            continue
+        if isinstance(merged.get(name), dict):
+            merged[name].update(section)
+        else:
+            merged[name] = dict(section)
+    return merged
+
+
 def load(path: str | None = None, overlay: str | None = None) -> Settings:
     """Read the settings. Missing or broken file gives the defaults.
 
-    `overlay` is a second file laid on top of the first, key by key inside each
-    section — which is what a *mode* is. `--practice` must not be a whole settings
-    file of its own: the sight-in, the beacon rectangle, the lead and the serial
-    port were measured on one gun on one screen over three evenings, and a mode
-    file that replaced them would hand a first-timer the one gun in the house that
-    is not aimed at anything. So a mode says the four numbers that make it a mode
-    and inherits every other one, hardware included.
+    `overlay` is a second file laid on top of the first, key by key inside the
+    sections a mode owns — which is what a *mode* is. A mode must not be a whole
+    settings file of its own: the sight-in, the beacon rectangle, the lead and
+    the serial port were measured on one gun on one screen over three evenings,
+    and a mode file that replaced them would hand a first-timer the one gun in
+    the house that is not aimed at anything. So a mode says the four numbers that
+    make it a mode and inherits every other one, hardware included.
     """
     path = path or os.environ.get(SETTINGS_ENV) or default_path()
-    data = _read(path) if os.path.exists(path) else {}
+    data = read_toml(path) if os.path.exists(path) else {}
     if data is None:
         data = {}
     if overlay:
-        over = _read(overlay) if os.path.exists(overlay) else None
+        over = read_toml(overlay) if os.path.exists(overlay) else None
         if over is None:
             _warn(f"{os.path.basename(overlay)} is missing — playing the base round")
         else:
-            merged = {k: dict(v) if isinstance(v, dict) else v
-                      for k, v in data.items()}
-            for name, section in over.items():
-                if isinstance(section, dict) and isinstance(merged.get(name), dict):
-                    merged[name].update(section)
-                else:
-                    merged[name] = section
-            data = merged
+            data = _overlaid(data, over, os.path.basename(overlay))
     if not data:
         return Settings()
 
     for key in data:
         if key not in ("duck", "round", "score", "dog", "scene", "gun", "sound",
-                       "leaderboard", "spawn"):
+                       "leaderboard", "spawn", MODE_SECTION):
             _warn(f"unknown section [{key}] — skipped")
 
     # the spawn rate used to live in [spawn]; old files still work, but ask to move

@@ -43,8 +43,13 @@ pip install -r requirements-dev.txt        # only to run the tests
 
 python3 main.py --pygame                                     # aim with the mouse (development)
 python3 main.py --pygame --serial /dev/tty.usbserial-0001    # aim with the light gun
-python3 main.py --pygame --serial /dev/tty.usbserial-0001 --practice   # ... for a first-timer
+python3 main.py --pygame --serial /dev/tty.usbserial-0001 --practice   # ... starting on practice
 ```
+
+The round is picked **in the game**, on the title screen — **M**, or **A on the
+remote** — so handing the gun to a first-timer and taking it back is not a
+restart. `--practice` (or `--mode NAME`) only says which round the evening opens
+on.
 
 **Playing with the light gun**, start to finish:
 
@@ -603,7 +608,11 @@ the same `InputSource`.
 ## How a game goes
 
 There are **two rounds**, and they are two settings files over the same game
-rather than two code paths.
+rather than two code paths. **The title screen switches between them** — **M** on
+the keyboard, or **A on the remote**, which is the one that matters: the player
+choosing the round is three metres away with both hands on the gun. The name of
+the round and a line saying what it is sit above the controls, and the next
+trigger pull plays that one.
 
 **The scored round** — `settings.toml`, what you get by default — is **40 ducks and
 40 shots**, launched at a steady pace (a 0.9 s pause) and crossing the screen
@@ -621,19 +630,54 @@ The score can go below zero and is shown below zero — clamping it at nothing w
 only hide that the round went badly. Counting the ducks alone made every shot free,
 and the best strategy was to hold the trigger down.
 
-**The practice round** — `--practice`, which is nothing but `--settings
-practice.toml` — is for handing the gun to someone who has never held one: **ten
-ducks, slow, one in the air at a time**, unlimited ammunition, the crosshair on,
-and nothing sent to the board. One duck at a time is the only genuinely different
-mechanic in it (`[duck] max_alive = 1`); everything else is a smaller number.
+**The practice round** — `practice.toml`, laid **over** `settings.toml` — is for
+handing the gun to someone who has never held one: **ten ducks, slow, one in the
+air at a time**, unlimited ammunition, the crosshair on, and nothing sent to the
+board. One duck at a time is the only genuinely different mechanic in it (`[duck]
+max_alive = 1`); everything else is a smaller number. `--practice` starts on it;
+**M** on the title screen goes there and back.
+
+**A mode is the round, never the rig.** A mode file may only set `[round]`,
+`[duck]`, `[score]` and `[gun] crosshair`; anything else in it is refused out loud
+and the base file's value stands. That rule is what makes a mode something you
+switch rather than something you launch: the window, the background, the sounds,
+the beacon rectangle, the sight-in and the board are the same in every round, so
+changing mode between two rounds costs a new world and a re-sized duck — not a
+restart. It is also the old safety, written down: the sight-in and the beacon
+rectangle were measured on one gun, on one screen, over three evenings, and a mode
+that could move them would hand the beginner the one gun in the house that is not
+aimed at anything.
+
+**Another round is another file.** Drop a TOML into `modes/` and it appears on the
+title screen next time the game starts, named by its own `[mode]` section:
+
+```toml
+# modes/sudden.toml
+[mode]
+name = "SUDDEN DEATH"
+note = "one shot, one duck — miss and it is over"
+
+[round]
+ducks = 1
+ammo = 1
+```
 
 **A scored round is shot down the sights.** `[gun] crosshair` decides whether the
 crosshair is drawn when the round starts — `"auto"` (the default) means off with a
 gun plugged in and on for the mouse, which has no front sight to aim down. **C**
 (or **A** on the remote) still flips it mid-round, and a round that had it up at
-any point is still played and still scored on screen, it is simply never offered to
-the leaderboard, and the results screen says which of the two reasons applies.
-Turning it back off before the last duck does not buy the record back.
+any point **of the round** is still played and still scored on screen, it is simply
+never offered to the leaderboard, and the results screen says which of the two
+reasons applies. Turning it back off before the last duck does not buy the record
+back.
+
+**The title screen and the countdown are not the round.** The crosshair is free
+there and the rule starts with the first duck, so turning it on to check the gun
+is tracking and putting it away before the round costs nothing. It used to count
+on those two screens as well — three seconds of countdown is enough to read how
+far the front sight sits from where the shot lands — but that made the one honest
+move look like the cheat, and the round you then shot down the sights was refused
+anyway.
 
 The ducks fly in the top `[duck] sky` of the picture (90 % by default) and the
 dog keeps to the bottom `[dog] band` (20 %), so neither gets in the other's way.
@@ -646,11 +690,20 @@ not read as a bad one.
 Then the game asks **WHO WAS SHOOTING?** — after every round, not only a record
 one. **Enter** sends the round to the leaderboard, **Esc** skips it. A name can be
 up to **50 characters**, so a name and a surname both fit; the field steps down a
-size once it is long, and the boards cut what they show to the width they have. The last name
-typed is offered pre-filled, so an evening of rounds is one keypress a time; the
-first character typed replaces it, so nobody has to backspace someone else's name
-out. After that **Space** or the trigger goes back to the title screen, where
-another pull starts the next round, and **Q** quits.
+size once it is long, and the boards cut what they show to the width they have.
+**The field comes up empty** and Enter on it does nothing: it used to be
+pre-filled with the last name typed on this machine, which in a room with a queue
+of players is the wrong default — the next player finishes a round, somebody
+else's name is already there, and one pull of **A** signs the round to them. An
+evening with one shooter is what `--player NAME` is for; everyone else picks
+their name off the list below. After that **Space** or the trigger goes back to
+the title screen, where another pull starts the next round, and **Q** quits.
+
+**Three kinds of round never reach this screen at all**: a practice round, a round
+that had the crosshair up, and a round with not a single shot in it — the last
+being what **Esc** on the countdown leaves behind, which used to go to the board
+as an empty `0/40` row and one more attempt against somebody's name. The results
+screen says which of the three applies.
 
 **Under the field are the names already on the board**, searched as you type:
 `ALREADY ON THE BOARD: ЖЕНЯ — 31/40 (12 tries)`. **Tab**, **↓** or **the trigger**
@@ -729,6 +782,10 @@ Round length, duck size, their speed and the spawn rate live in `settings.toml` 
 the project root — with comments there explaining what each value means:
 
 ```toml
+[mode]
+name = "SCORED"       # what the title screen calls this round
+note = "the whole flock, shot down the sights — the one the board keeps"
+
 [round]
 ducks = 40            # how many ducks in a round
 interval = 0.9        # pause between launches: round length ≈ ducks × interval
@@ -917,7 +974,9 @@ and plays on in silence, the mixer handed back.
 | `duckhunt/core/calibration.py` | the sight correction: fitting it, `calibration.json`, and applying it |
 | `duckhunt/frontends/calibrate.py` | the five-target sighting-in screen (**F1**, `--calibrate`) |
 | `settings.toml` | the settings themselves — edit these, no need to touch the code |
+| `duckhunt/core/modes.py` | the list of rounds: `practice.toml` and `modes/*.toml`, and what a mode may change |
 | `practice.toml` | the practice round, laid **over** `settings.toml` so the gun keeps its sight-in |
+| `modes/` | any other round, same rule — it shows up on the title screen on its own |
 | `tests/` | `pytest`: the board's queries and routes, the two rounds' arithmetic, the name screen driven headlessly |
 | `duckhunt/frontends/pygame_app.py` | **the pixel frontend**: sprites, backgrounds, dog, crosshair |
 | `duckhunt/frontends/terminal.py` | the ASCII frontend (the original prototype) |

@@ -4,6 +4,14 @@
     python3 main.py --pygame --serial /dev/tty.usbserial-0001   # pixel art + LIGHT GUN
     python3 main.py                                             # the old ASCII frontend, keyboard
 
+The round is chosen IN THE GAME, on the title screen: M, or A on the remote,
+cycles the modes — the scored round, practice.toml, and anything dropped into
+modes/. `--mode NAME` (and its shortcut `--practice`) only say which one the
+evening opens on, so handing the gun to a first-timer is not a restart. What a
+mode may change is fenced in core/config.py, and that fence is what makes it
+switchable: the window, the sight-in, the beacons and the board are the same
+round to round.
+
 The scoreboard is not in here: it is two processes of its own, on a screen of its
 own (docs/LEADERBOARD.md). The game asks who was shooting once the round is over
 and posts the row; what the board makes of it is shown there, not here.
@@ -30,13 +38,11 @@ from dataclasses import replace
 
 from blessed import Terminal
 
+from duckhunt.core import modes as modes_core
 from duckhunt.core.config import LeaderboardSettings
-from duckhunt.core.config import load as load_settings
 from duckhunt.frontends.terminal import TerminalFrontend
 from duckhunt.input.base import AimState, InputSource
 from duckhunt.input.keyboard import KeyboardInput
-
-PRACTICE_NAME = "practice.toml"      # what --practice is a shortcut for
 
 LEADERBOARD_ENV = "DUCKHUNT_LEADERBOARD"
 
@@ -86,15 +92,24 @@ def main() -> None:
                          "four IR beacons to (TAB toggles them in game)")
     ap.add_argument("--settings", metavar="FILE",
                     help="settings file (settings.toml in the project root by default)")
+    ap.add_argument("--mode", metavar="NAME",
+                    help="which round to START on — the pixel frontend's title "
+                         "screen switches them with M (or A on the remote), so "
+                         "this is only where the evening begins. The names are "
+                         "printed at startup; a mode is a short TOML file laid "
+                         "over the settings (practice.toml, or modes/*.toml)")
     ap.add_argument("--practice", action="store_true",
-                    help="ten slow ducks, one in the air at a time, the crosshair "
-                         "on and nothing sent to the board — for handing the gun "
-                         "to someone who has never held one. practice.toml laid "
-                         "over the settings, so the gun keeps its sight-in")
+                    help="start on the practice round — ten slow ducks, one in "
+                         "the air at a time, the crosshair on and nothing sent "
+                         "to the board, for handing the gun to someone who has "
+                         "never held one. The same as --mode practice")
     ap.add_argument("--player", metavar="NAME",
                     help="who is shooting: pre-fills the question the pixel "
-                         "frontend asks after the round, for an evening of rounds "
-                         "without typing")
+                         "frontend asks after the round, for an evening of "
+                         "rounds without typing. Nothing else does — the field "
+                         "comes up empty, so one player's round is never one "
+                         "keypress away from being signed to the player before "
+                         "them")
     ap.add_argument("--leaderboard", metavar="URL",
                     help="send every round to the scoreboard at URL (overrides "
                          "[leaderboard] in settings.toml, and DUCKHUNT_LEADERBOARD)")
@@ -102,9 +117,22 @@ def main() -> None:
                     help="do not send this session's rounds anywhere")
     args = ap.parse_args()
 
-    settings = load_settings(args.settings, practice_overlay(args))
-    settings = with_leaderboard(settings, args)
-    print(f"Settings: {settings.summary()}\n(change them in settings.toml)")
+    # Every round there is to play, not just the one asked for: the title screen
+    # switches between them, so they are all resolved before the window opens —
+    # a mode is only allowed to change the round (see core/modes.py), which is
+    # exactly what makes that safe to do mid-evening.
+    all_modes = [modes_core.with_settings(m, with_leaderboard(m.settings, args))
+                 for m in modes_core.load_all(args.settings)]
+    start = starting_mode(all_modes, args)
+    settings = all_modes[start].settings
+    print(f"{all_modes[start].name}: {settings.summary()}"
+          f"\n(change them in settings.toml)")
+    if len(all_modes) > 1:
+        how = ("M in game, or A on the remote from the title screen"
+               if args.pygame else
+               "--mode NAME picks one; the ASCII frontend has no title screen "
+               "to switch on")
+        print(f"Modes: {' · '.join(m.name for m in all_modes)} — {how}")
 
     # the gun input source (serial/udp), shared by both frontends
     gun = None
@@ -124,7 +152,8 @@ def main() -> None:
                               calibrate=args.calibrate,
                               use_calibration=args.calibration,
                               player_name=args.player or "",
-                              source_name=source_name or "mouse")
+                              source_name=source_name or "mouse",
+                              modes=all_modes, mode=start)
         try:
             game.run(gun)          # gun=None -> aim with the mouse
         finally:
@@ -183,29 +212,26 @@ def with_leaderboard(settings, args):
     return replace(settings, leaderboard=lb)
 
 
-def practice_overlay(args) -> str | None:
-    """`practice.toml`'s path when `--practice` was given, else None.
+def starting_mode(all_modes, args) -> int:
+    """Which mode the game opens on — and a refusal rather than a fallback.
 
-    A mode is a file laid OVER the settings rather than a file instead of them:
-    `practice.toml` says the four numbers that make a round practice and inherits
-    everything else, hardware included. That distinction is the whole safety of it
-    — the sight-in, the beacon rectangle and the lead were measured on one gun over
-    three evenings, and a mode that replaced them would hand the beginner the one
-    gun in the house that is not aimed at anything. It layers over `--settings` too,
-    for the same reason.
+    A `--mode` nobody has written is an error, not a shrug. `--practice` is the
+    case that makes it one: falling back to the base settings would be the exact
+    inverse of what the flag promises — forty ducks at full speed, a magazine to
+    run out of, and the round posted as a record — handed to somebody who has
+    never held the gun.
     """
-    if not args.practice:
-        return None
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(here, PRACTICE_NAME)
-    if not os.path.exists(path):
-        # Falling back to the base settings here would be the exact inverse of
-        # what the flag promises: forty ducks at full speed, a magazine to run
-        # out of, and the round posted as a record — handed to somebody who has
-        # never held the gun. Better to refuse and say which file is missing.
-        sys.exit(f"{PRACTICE_NAME} is missing, so --practice has nothing to play. "
-                 f"Expected it at {path}")
-    return path
+    wanted = args.mode or ("practice" if args.practice else None)
+    if not wanted:
+        return 0
+    found = modes_core.find(all_modes, wanted)
+    if found < 0:
+        have = ", ".join(m.name for m in all_modes)
+        sys.exit(f"no mode called {wanted!r}, so there is nothing to play. "
+                 f"There is: {have}. A mode is a TOML file laid over the "
+                 f"settings — {modes_core.PRACTICE_NAME} in the project root, "
+                 f"or {modes_core.MODES_DIR}/*.toml")
+    return found
 
 
 def print_result(w) -> None:

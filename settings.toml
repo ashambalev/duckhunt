@@ -28,11 +28,26 @@
 #                   the FEEL   — spread, crosshair, lead, lead_max
 #                   the RIG    — frame, beacon_w/h/cx/cy: where the LEDs are taped
 #   [leaderboard] where the scoreboard is, if there is one
+#   [mode]        what this round is called on the title screen
 #
 # The `[gun]` rig block is the only part that is about a particular room: it is
 # what changes when the beacons move to another screen, and nothing else here has
 # to change with it. A practice round is a short file laid over this one — see
 # practice.toml — so a mode never has to repeat any of the above.
+#
+# MODES. This file is the round the game starts on; every other round is a short
+# file laid over it — `practice.toml`, or anything dropped into `modes/`. The
+# title screen cycles them (M, or A on the remote), so there is nothing to
+# restart. A mode may only change `[round]`, `[duck]`, `[score]` and `[gun]
+# crosshair`: the rig below — which monitor, where the beacons are taped, how far
+# the gun shoots off them — is this room, not this round, and stays put whichever
+# mode is being played.
+
+# What the round in THIS file is called, when the title screen has more than one
+# to offer. A mode file names itself the same way.
+[mode]
+name = "SCORED"
+note = "the whole flock, shot down the sights — the one the board keeps"
 
 [round]
 # A round is `ducks` ducks; when the flock is gone you get the result and the
@@ -221,10 +236,12 @@ spread = 0.02
 # Whether the crosshair is drawn when the round starts — not a cosmetic setting
 # any more. A scored round is shot DOWN THE SIGHTS: put the front sight on the
 # duck, pull, and the screen tells you where it went. A round that had the
-# crosshair up at any point is still played and still scored on screen, it is
-# simply never offered to the leaderboard, and the results screen says so. C (or
-# A on the remote) still flips it mid-round; it just costs the record, and
-# flipping it back off does not buy it back.
+# crosshair up at any point OF THE ROUND is still played and still scored on
+# screen, it is simply never offered to the leaderboard, and the results screen
+# says so. C (or A on the remote) still flips it mid-round; it just costs the
+# record, and flipping it back off does not buy it back. The title screen and
+# the countdown are not the round — the crosshair is free there, so checking the
+# gun is tracking before a round does not cost you that round.
 #
 #   "auto" — off when a gun is plugged in, on for the mouse. A mouse has no front
 #            sight to aim down, so there the crosshair IS the aiming; those rounds

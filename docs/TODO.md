@@ -27,8 +27,9 @@ driven headlessly.
 - [x] **M3 — the name.** Asked AFTER the round instead of before it, and after
       every round rather than only a record one: a player who has just shot has a
       number they want on the board, which is when they will gladly type. The
-      pixel frontend's `name` mode, `player.json` remembering the last one,
-      `--player` to skip it.
+      pixel frontend's `name` mode, the field left empty (Sept 2026: it used to
+      remember the last name in `player.json`, which signs one player's round to
+      the player before them), `--player` to skip the typing.
 - [x] **M4 — the game talks to the board.** `duckhunt/net/leaderboard_client.py`,
       the `[leaderboard]` settings, the offline queue, and one line on the results
       screen about delivery and nothing else — the board's own content stays on
@@ -84,11 +85,23 @@ are launched with nothing left to shoot them with. `+2` a duck, `−1` a miss, `
 the dog — the dog's penalty replaces the miss rather than stacking on it. The score
 may go below zero and is shown below zero.
 
-**Practice** — `--practice`, which is exactly `--settings practice.toml`: ten ducks,
-slow, **one in the air at a time** (`[duck] max_alive = 1`, the only genuinely new
-mechanic — the pace is a timer, so the held-back duck goes up the moment the sky
-clears rather than waiting out another interval), unlimited ammunition, the
-crosshair on, and nothing sent to the board.
+**Practice** — `practice.toml` laid over the settings: ten ducks, slow, **one in
+the air at a time** (`[duck] max_alive = 1`, the only genuinely new mechanic — the
+pace is a timer, so the held-back duck goes up the moment the sky clears rather
+than waiting out another interval), unlimited ammunition, the crosshair on, and
+nothing sent to the board.
+
+**Chosen in the game, not at launch** (Sept 2026). The title screen cycles the
+modes with **M**, or **A on the remote** — which is the binding that matters,
+since handing the gun over and taking it back is exactly when the round changes
+and the player is three metres from the keyboard. `--practice` / `--mode NAME`
+now only say which round the evening opens on. What made it switchable is that
+the rule was written down and enforced (`config.MODE_SECTIONS`): a mode owns
+`[round]`, `[duck]`, `[score]` and `[gun] crosshair`, and nothing else — so the
+window, the sight-in, the beacons, the sounds and the board never move, and a
+switch costs a new `World` and a re-sized duck. Any other round is another file:
+`modes/*.toml`, named by its own `[mode]` section, on the screen without being
+registered anywhere.
 
 **The dog crossed the line the honest way.** He is still drawn entirely by the
 frontend, and `core` still has never heard of him — but `World.update` now takes
@@ -105,6 +118,15 @@ so flipping it back does not launder the round, and `leaderboard_client.refusal(
 is the one place that decides whether a round may be offered — both frontends ask
 it, the results screen says which reason applies, and a refused round skips the
 name screen altogether rather than asking for a name nobody will find.
+
+**The latch starts with the first duck** (Sept 2026). The title screen and the
+countdown used to latch it too, on the grounds that three seconds in the stance
+with the crosshair up is exactly how you read the offset between the front sight
+and where the shot lands. In practice it turned the one honest move — crosshair
+on to check the gun is tracking, off to play — into a refusal, and the round that
+followed really was shot down the sights. So the rule is now judged over the
+round: `World.update` is the only thing that latches it, and the two screens
+before the round are free.
 
 **The board ranks by score**, done with the modes rather than after them: `score`,
 `dog_hits` and `crosshair` in the schema, the payload and the validator, both
@@ -176,8 +198,9 @@ but a move:
 
 - `NAME_MAX` went to `duckhunt/core/player.py`, next to the name it limits.
 - `pending_path()` was deriving the project root from `scores.default_path()`; it
-  uses `player.default_path()` now. The offline queue never had anything to do with
-  the score table.
+  works it out from its own module now. (It leaned on `player.default_path()` for a
+  while, until `player.json` went the same way as `scores.json` — see M3.) The
+  offline queue never had anything to do with the score table.
 - `--from-scores` **kept its reader**, moved into `leaderboard/seed.py` as
   `read_scores()`. An old `scores.json` in somebody's project root is a handful of
   real evenings, and the import exists to put them on the board rather than to throw

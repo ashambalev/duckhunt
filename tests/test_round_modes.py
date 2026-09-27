@@ -205,6 +205,42 @@ def test_the_crosshair_is_latched_not_sampled():
     assert w.crosshair_used is True
 
 
+# --- what a round has to be to reach the board ------------------------------
+
+def test_the_three_reasons_a_round_is_not_a_record():
+    """`refusal()` is the one place both frontends ask, so the rule is tested
+    where it lives rather than through either of them."""
+    from duckhunt.net.leaderboard_client import (NOT_SCORED, NOT_SHOT,
+                                                 NOT_SIGHTS, refusal)
+
+    played = make()
+    played.shots = 1
+    assert refusal(played, played.settings) == ""
+
+    practice = make(scored=False)
+    practice.shots = 1
+    assert refusal(practice, practice.settings) == NOT_SCORED
+
+    peeked = make()
+    peeked.shots, peeked.crosshair_used = 1, True
+    assert refusal(peeked, peeked.settings) == NOT_SIGHTS
+
+    # a round nobody fired a shot in — what ESC on the countdown leaves behind
+    assert refusal(make(), make().settings) == NOT_SHOT
+
+
+def test_the_kind_of_round_is_said_before_the_fact_that_there_was_none():
+    """A practice round nobody shot in is refused as practice: the first two
+    reasons say what kind of round it was, the third only that there was not
+    one, and telling somebody their practice round was empty answers a question
+    they did not ask."""
+    from duckhunt.net.leaderboard_client import NOT_SCORED, refusal
+
+    empty_practice = make(scored=False)
+    assert empty_practice.shots == 0
+    assert refusal(empty_practice, empty_practice.settings) == NOT_SCORED
+
+
 # --- a mode is a file laid over the settings, not instead of them -----------
 
 def test_practice_inherits_the_hardware_it_does_not_name():
@@ -265,24 +301,111 @@ def test_a_round_the_magazine_really_cut_short_says_so():
     assert w.dry and w.released < w.total
 
 
-def test_practice_with_no_file_refuses_rather_than_playing_the_hard_round():
+# --- the list of modes, and switching between them --------------------------
+
+
+def write_mode(dirpath, filename, text):
+    """One mode file in a throwaway project root."""
+    path = dirpath / filename
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_the_base_round_leads_the_list_and_the_mode_files_follow(tmp_path):
+    """Every round there is, resolved before the window opens.
+
+    The base round is always first — a house with no mode files still has a game
+    to play, it simply has nothing to switch to — and `practice.toml` comes
+    before whatever is in `modes/`, because it is the one a first-timer is
+    handed.
+    """
+    from duckhunt.core import modes
+
+    (tmp_path / "modes").mkdir()
+    write_mode(tmp_path, "practice.toml", '[round]\nducks = 10\n')
+    write_mode(tmp_path / "modes", "sudden.toml",
+               '[mode]\nname = "SUDDEN DEATH"\n[round]\nammo = 1\n')
+
+    found = modes.load_all(where=str(tmp_path))
+    assert [m.name for m in found] == ["SCORED", "PRACTICE", "SUDDEN DEATH"]
+    assert found[0].path is None
+    assert found[2].settings.round.ammo == 1
+    assert modes.find(found, "sudden death") == 2
+    assert modes.find(found, "no such round") == -1
+
+
+def test_a_mode_with_no_section_is_named_after_its_file(tmp_path):
+    from duckhunt.core import modes
+
+    (tmp_path / "modes").mkdir()
+    write_mode(tmp_path / "modes", "slow.toml", "[duck]\nspeed_max = 0.2\n")
+    found = modes.load_all(where=str(tmp_path))
+    assert [m.name for m in found] == ["SCORED", "SLOW"]
+    assert found[1].note == ""
+
+
+def test_a_mode_cannot_change_the_rig_only_the_round(tmp_path):
+    """The rule that makes a mode switchable in the first place.
+
+    A mode is the round: how many ducks, how fast, what a shot costs, and
+    whether the crosshair is up. The rig — which monitor, where the beacons are
+    taped, how far the gun shoots off them, which board — is the room, and a
+    title screen cannot re-open a window or re-measure a sight-in between two
+    pulls of the trigger. So an overlay that reaches for any of it is refused
+    rather than half-applied.
+    """
+    from duckhunt.core.config import load
+
+    overlay = write_mode(tmp_path, "greedy.toml", """
+[round]
+ducks = 5
+[gun]
+crosshair = "on"
+beacon_w = 0.4
+frame = "picture"
+[scene]
+fullscreen = false
+[leaderboard]
+url = "http://elsewhere:9999"
+""")
+    base = load()
+    mode = load(overlay=overlay)
+    assert mode.round.ducks == 5                    # the round: applied
+    assert mode.gun.crosshair == "on"               # ... and its one gun key
+    assert mode.gun.beacon_w == base.gun.beacon_w   # the rig: untouched
+    assert mode.gun.frame == base.gun.frame
+    assert mode.scene == base.scene
+    assert mode.leaderboard == base.leaderboard
+
+
+def test_an_unknown_mode_refuses_rather_than_playing_the_hard_round():
     """`--practice` must never quietly become the scored round.
 
     Falling back to the base settings would be the inverse of what the flag
     promises — forty ducks at full speed, a magazine to run out of, and the row
-    posted as a record — handed to somebody who has never held the gun.
+    posted as a record — handed to somebody who has never held the gun. The same
+    answer covers a `--mode` nobody has written yet.
     """
     import main
     import pytest as _pytest
 
+    from duckhunt.core.config import Settings
+    from duckhunt.core.modes import Mode
+
+    only_scored = [Mode("SCORED", "", None, Settings())]
+
     class Args:
-        settings = None
+        mode = None
         practice = True
 
-    real, main.PRACTICE_NAME = main.PRACTICE_NAME, "no-such-practice-file.toml"
-    try:
-        with _pytest.raises(SystemExit) as exit_info:
-            main.practice_overlay(Args())
-    finally:
-        main.PRACTICE_NAME = real
-    assert "no-such-practice-file.toml" in str(exit_info.value)
+    with _pytest.raises(SystemExit) as exit_info:
+        main.starting_mode(only_scored, Args())
+    assert "practice" in str(exit_info.value)
+
+    Args.practice, Args.mode = False, "sudden death"
+    with _pytest.raises(SystemExit) as exit_info:
+        main.starting_mode(only_scored, Args())
+    assert "sudden death" in str(exit_info.value)
+
+    Args.mode = None
+    assert main.starting_mode(only_scored, Args()) == 0

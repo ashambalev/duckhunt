@@ -11,6 +11,15 @@
 #
 # So: short, slow, unscored, and only one duck in the air — which is the one thing
 # in here that is a mechanic rather than a number.
+#
+# It does not have to be chosen at launch: the title screen cycles the modes it
+# finds (M, or A on the remote), so the gun can be handed over and handed back
+# without anyone walking to the keyboard.
+
+# What the title screen calls this round, and the line under it.
+[mode]
+name = "PRACTICE"
+note = "ten slow ducks, one at a time — nothing goes to the board"
 
 [round]
 ducks = 10            # ten, not forty: a first round should end while it is still fun

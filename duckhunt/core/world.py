@@ -43,11 +43,14 @@ class World:
         self.shots = 0
         self.hits = 0
         self.dog_hits = 0        # shots that hit the dog. He is on your side.
-        # Whether the crosshair was drawn at any point in this round. A scored
-        # round is shot down the sights; one that had the crosshair up is still a
-        # round, and still scored on screen, it is simply never a record. Latched
-        # rather than sampled at the end, so flipping it off before the last duck
-        # does not launder the round.
+        # Whether the crosshair was drawn at any point FROM THE FIRST DUCK ON. A
+        # scored round is shot down the sights; one that had the crosshair up is
+        # still a round, and still scored on screen, it is simply never a record.
+        # Latched rather than sampled at the end, so flipping it off before the
+        # last duck does not launder the round — but the latch begins where the
+        # round does. The title screen and the countdown before it are free: they
+        # used to count as well, which made the one honest move (crosshair on to
+        # see the gun is tracking, off to play) read as the cheat.
         self.crosshair_used = False
         self.spawn_timer = 0.0
         self.spawn_interval = self.settings.round.interval

@@ -1,17 +1,16 @@
-"""Who played last, and how much name they may type.
+"""How much name a player may type.
 
-The name is asked after every round now, and asking a repeat player to spell
-themselves out again every time is the kind of friction that ends with everybody
-being PLAYER. So the last name typed is remembered and offered pre-filled: Enter
-accepts it, Backspace starts a different one.
+There used to be a `player.json` here as well, remembering the last name typed
+on this machine and offering it pre-filled after every round. In the one room
+this game is played in that is the wrong default: the next player finishes a
+round, the previous player's name is already in the field, and one pull of A
+signs their round to somebody else. The field starts empty now, and what is
+offered instead is the list of names already on the board — which the trigger
+can walk without anyone reaching for a keyboard. `--player NAME` still fills it
+in for an evening with one shooter.
 """
 
 from __future__ import annotations
-
-import json
-import os
-
-PLAYER_NAME = "player.json"
 
 # How much name a player may type. Generous on purpose: a name, a surname, a
 # nickname in Cyrillic, all of it. This is what is STORED — what is SHOWN is the
@@ -21,27 +20,3 @@ PLAYER_NAME = "player.json"
 # belong to is gone; `leaderboard.store.NAME_MAX` is the same number on the
 # server's side of the wire.
 NAME_MAX = 50
-
-
-def default_path() -> str:
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(here, "..", "..", PLAYER_NAME)
-
-
-def load(path: str | None = None) -> str:
-    """The last player's name, or "" if there is none to remember."""
-    path = path or default_path()
-    try:
-        with open(path, encoding="utf-8") as f:
-            return str(json.load(f).get("name", ""))
-    except (OSError, ValueError, AttributeError):
-        return ""
-
-
-def save(name: str, path: str | None = None) -> None:
-    path = path or default_path()
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"name": name}, f, ensure_ascii=False)
-    except OSError:
-        pass          # remembering a name is a convenience, never a failure

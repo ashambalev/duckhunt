@@ -53,8 +53,9 @@ def utc_now() -> str:
 
 
 def pending_path() -> str:
-    """Next to `player.json`, which is the game's other bit of local state."""
-    return os.path.join(os.path.dirname(player.default_path()), PENDING_NAME)
+    """`pending_runs.jsonl` in the project root, next to `settings.toml`."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.normpath(os.path.join(here, "..", "..", PENDING_NAME))
 
 
 def payload(world, name: str, client_id: str, input_source: str | None = None,
@@ -80,11 +81,12 @@ def payload(world, name: str, client_id: str, input_source: str | None = None,
                          "dog": s.score.dog, "max_alive": s.duck.max_alive}}
 
 
-# Why a round is not going to the board. Both of them are about the round rather
+# Why a round is not going to the board. All three are about the round rather
 # than about the network, which is why they are here next to the delivery lines
 # and shown in the same place on the results screen.
 NOT_SCORED = "PRACTICE — NOT FOR THE BOARD"
 NOT_SIGHTS = "THE CROSSHAIR WAS ON — NOT FOR THE BOARD"
+NOT_SHOT = "NOT A SHOT FIRED — NOT FOR THE BOARD"
 
 
 def refusal(world, settings) -> str:
@@ -93,13 +95,23 @@ def refusal(world, settings) -> str:
     One place, because both frontends have to agree about it and because a round
     quietly not arriving is the worst way to learn the rule. A practice round is
     not a record by definition; a scored round is shot down the sights, and the
-    crosshair having been up at any point is latched on the world, so turning it
-    off before the last duck does not buy the record back.
+    crosshair having been up at any point of the ROUND is latched on the world,
+    so turning it off before the last duck does not buy the record back. Before
+    the round — on the title screen, or during the countdown — it is free.
+
+    And a round nobody fired a shot in is not a round. It is what ESC on the
+    countdown leaves behind, and it used to go to the board as `0/40`: a row with
+    nothing in it, one more attempt against a player's name, and — since the
+    crosshair is only judged over the round, and that round had none — perfectly
+    within the rules. Checked last, because the first two say what KIND of round
+    it was and this one only says there was not one.
     """
     if not settings.round.scored:
         return NOT_SCORED
     if world.crosshair_used:
         return NOT_SIGHTS
+    if world.shots == 0:
+        return NOT_SHOT
     return ""
 
 

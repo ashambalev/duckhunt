@@ -14,8 +14,10 @@ Two rules decide everything below:
 - **The name is asked after the round.** A player walks up, is handed a gun and
   shoots; being asked to type first is a form to fill in before a game. Afterwards
   they have a number they want on the board, which is the moment they will happily
-  spell their name. The last name typed is remembered (`player.json`) and offered
-  pre-filled, so an evening of rounds is Enter, Enter, Enter.
+  spell their name. The field starts **empty** — nothing is remembered between
+  rounds, because the next player is not the last one — and the names already on
+  the board are offered under it to be taken with the trigger. `--player NAME` is
+  the evening with one shooter, where it is Enter, Enter, Enter.
 - **The game draws nothing of the board.** No ranks, no other players, no table —
   the results screen shows your round and the line you signed it with, and that is
   all. Two scoreboards disagreeing about which one you should be reading is worse
@@ -461,9 +463,11 @@ put them on the board rather than to throw them away for being in the old shape.
 1. **`WHO WAS SHOOTING?` after every round that could be a record**, not only a
    winning one: the board keeps every attempt, and a round nobody signed is a row
    nobody can find. (A round that could not be a record does not ask — see 3.)
-   Enter sends it, Esc skips it entirely. The buffer starts on the last name used
-   (`player.json`, or `--player`), and the first character typed replaces it whole,
-   so a new player does not have to backspace someone else's name out.
+   Enter sends it, Esc skips it entirely. The buffer starts **empty**, and Enter
+   on an empty buffer does nothing: a pre-filled field plus the remote's A is how
+   one player's round gets signed with the name of the one before them. `--player
+   NAME` fills it for a one-shooter evening, and there the first character typed
+   replaces it whole rather than having to be backspaced out.
 2. **The names already there are offered under the field** — `/api/players?q=`
    searched as you type, `TAB` / `↓` / the trigger to take one, `↑` to come back
    off the list to what you typed, `ENTER` — or **A on the remote** — to send
@@ -477,10 +481,13 @@ put them on the board rather than to throw them away for being in the old shape.
 3. **Not every round is offered.** `leaderboard_client.refusal(world, settings)` is
    the one place that decides, and both frontends ask it: a practice round
    (`[round] scored = false`) is not a record by definition, and a scored round that
-   had the crosshair up at any point is not one either — a scored round is shot down
-   the sights. A refused round skips the `WHO WAS SHOOTING?` screen altogether
+   had the crosshair up at any point **of the round** is not one either — a scored
+   round is shot down the sights. The title screen and the countdown are not the
+   round: the crosshair is free there, and the latch starts with the first duck.
+   The third reason is a round with **no shot in it** — what Esc on the countdown
+   leaves behind — which used to arrive as an empty `0/40` row. A refused round skips the `WHO WAS SHOOTING?` screen altogether
    rather than asking for a name nobody will ever find, and the results screen says
-   which of the two reasons applies. `crosshair` still rides along in the payload
+   which of the three reasons applies. `crosshair` still rides along in the payload
    and is stored, so the server can turn such a row away itself if a cabinet ever
    sends one.
 4. **The round has an identity**: `World` makes a `run_uuid` and stamps
@@ -518,7 +525,8 @@ put them on the board rather than to throw them away for being in the old shape.
 - [x] **M2 — the console board.** The table, the running line, the poll thread, the
       link-down state.
 - [x] **M3 — the name.** Asked after the round (not before, as this file first
-      planned), remembered in `player.json`, `--player` to skip it.
+      planned), the field empty and the board's own names offered under it,
+      `--player` to skip the typing altogether.
 - [x] **M4 — the game talks to the board.** The client, the `[leaderboard]`
       settings, the offline queue, the one delivery line on the results screen.
 - [x] **M5 — seeding.** `leaderboard/seed.py`: import an old `scores.json`, `--demo N`.
@@ -540,11 +548,12 @@ put them on the board rather than to throw them away for being in the old shape.
 | `leaderboard/board.html` | the browser board: the same data as a tube TV |
 | `leaderboard/seed.py` | import an old `scores.json`, generate and clear demo rows |
 | `duckhunt/net/leaderboard_client.py` | POST + retries + `pending_runs.jsonl`, and `PlayerLookup` |
-| `duckhunt/core/player.py` | who played last, in `player.json` |
+| `duckhunt/core/player.py` | how much name a player may type (`NAME_MAX`) |
 | `duckhunt/frontends/pygame_app.py` | the `name` mode after the round, the names on offer, the delivery line |
 | `duckhunt/core/config.py`, `settings.toml` | the `[leaderboard]` section |
-| `main.py` | `--player`, `--practice`, `--leaderboard`, `--no-leaderboard` |
+| `main.py` | `--player`, `--mode` / `--practice`, `--leaderboard`, `--no-leaderboard` |
 | `practice.toml` | the practice round: ten slow ducks, one at a time, nothing sent |
+| `duckhunt/core/modes.py` | the rounds the title screen cycles — a mode may not touch `[leaderboard]` |
 | `docs/LEADERBOARD.md` | this file |
 
 ## Tests
@@ -560,7 +569,11 @@ run happily while an evening's board is up.
   higher score, `attempts` counting both.
 - A round shot with the crosshair on → no name screen, the results screen says the
   crosshair was up, and nothing arrives on the board.
-- `--practice` → no name screen either, and the board is untouched by ten rounds of it.
+- The practice round → no name screen either, and the board is untouched by ten
+  rounds of it. Worth doing by switching to it with **M** on the title screen
+  rather than with `--practice`, since that is how it is reached in an evening:
+  the round that follows the switch must be the practice one, and the scored
+  round switched back to must still reach the name screen.
 - A round that ends on an empty magazine → the shot that emptied it counted, the last
   duck landed, and the row that arrives says the score, not the ducks.
 - An old copy of the game posting without `score` → accepted, ranked as `score = hits`.

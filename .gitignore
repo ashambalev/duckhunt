@@ -22,7 +22,8 @@ calibration.json
 # Test-run logs from tools/ir_view.py
 logs/
 
-# The scoreboard's database, its queue of unsent rounds, and who played last
+# The scoreboard's database, its queue of unsent rounds, and the name file that
+# the game no longer writes (an existing one is ignored rather than tracked)
 leaderboard.db
 leaderboard.db-wal
 leaderboard.db-shm
