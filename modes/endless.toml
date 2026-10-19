@@ -1,0 +1,31 @@
+# 🦆 Endless — for after the scoring is over
+#
+#     python3 main.py --mode endless --serial /dev/tty.usbserial-0001
+#
+# Once the board has been finalized there is nothing left to play for but the
+# ducks, so this round has no end, no clock and no score: the ducks keep coming
+# at the scored round's speed until ESC, and the one number on screen is how many
+# have come down (plus the combo, how many in a row). Nothing goes to the board.
+#
+# What it has instead is a clip: ten shots, then a reload — A on the remote, R on
+# the keyboard or the right mouse button, and a pull on an empty clip starts one
+# too. The dog still fetches what you shoot; he just does not laugh at what you
+# miss.
+
+[mode]
+name = "ENDLESS"
+note = "shoot the ducks! — no end, a ten-shot clip, A to reload"
+
+[round]
+endless = true        # only ESC ends it; [round] ducks is ignored
+scored = false        # never offered to the leaderboard
+ammo = 0              # the round never runs dry ...
+clip = 10             # ... but the clip does, every ten shots
+reload = 1.0          # seconds the gun is dead while reloading
+dog_laughs = false    # no dog laughing at the ones that got away
+interval = 0.9        # the scored round's opening pace ...
+speedup = 1.0         # ... held there: a pace that kept speeding up forever
+                      # would bury the sky in ducks a few minutes in
+
+[gun]
+crosshair = "off"     # down the sights, like the scored round

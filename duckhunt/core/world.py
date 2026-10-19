@@ -43,6 +43,10 @@ class World:
         self.shots = 0
         self.hits = 0
         self.dog_hits = 0        # shots that hit the dog. He is on your side.
+        # Ducks downed in a row: a shot that hits nothing (or the dog) breaks it.
+        # A duck that merely gets away does not — the streak is about aim.
+        self.combo = 0
+        self.best_combo = 0
         # Whether the crosshair was drawn at any point FROM THE FIRST DUCK ON. A
         # scored round is shot down the sights; one that had the crosshair up is
         # still a round, and still scored on screen, it is simply never a record.
@@ -57,6 +61,10 @@ class World:
         self.released = 0        # how many ducks have been released this round
         self.elapsed = 0.0       # how long the round has been running, seconds
         self.stopped = False     # the player ended the round early — see stop()
+        # The clip ([round] clip): what is in it, and how long until a reload in
+        # progress is done (0 — not reloading). Unused when there is no clip.
+        self.clip_left = self.settings.round.clip
+        self.reloading = 0.0
         # events driving the dog's reactions (monotonic counters; the frontend
         # watches them for increments)
         self.landed = 0    # a downed duck hit the ground (the dog retrieves it)
@@ -90,6 +98,33 @@ class World:
         return self.ammo == 0
 
     @property
+    def endless(self) -> bool:
+        """The flock never runs out — only stop() ends the round."""
+        return self.settings.round.endless
+
+    @property
+    def clip(self) -> int:
+        """Shots left in the clip, or -1 when there is no clip to reload."""
+        return self.clip_left if self.settings.round.clip > 0 else -1
+
+    @property
+    def loaded(self) -> bool:
+        """A pull right now would fire: a round in the clip, not mid-reload."""
+        return self.settings.round.clip <= 0 or (self.clip_left > 0
+                                                 and not self.reloading)
+
+    def reload(self) -> None:
+        """Start reloading the clip. Nothing to do when it is full, has no clip,
+        or a reload is already under way. The gun is dead until it is done."""
+        cap = self.settings.round.clip
+        if cap <= 0 or self.reloading or self.clip_left >= cap:
+            return
+        if self.settings.round.reload <= 0:
+            self.clip_left = cap
+        else:
+            self.reloading = self.settings.round.reload
+
+    @property
     def crowded(self) -> bool:
         """The sky is as full as `[duck] max_alive` allows. 0 means never.
 
@@ -111,7 +146,7 @@ class World:
         """
         if self.stopped:
             return True
-        if self.ducks:
+        if self.ducks or self.endless:
             return False
         return self.released >= self.total or self.dry
 
@@ -179,7 +214,7 @@ class World:
         # than the magazine reaches, because launching a duck at a player with
         # nothing to shoot it with is not a round, it is a taunt.
         self.spawn_timer += dt
-        if self.released < self.total and not self.dry \
+        if (self.endless or self.released < self.total) and not self.dry \
                 and self.spawn_timer >= self.spawn_interval:
             if self.crowded:
                 # The pace is a timer, so a duck held back would otherwise owe a
@@ -198,8 +233,18 @@ class World:
         # same radius, so the circle on screen is the hit zone. Nearest rather
         # than first in the list, because with a radius two ducks can be in range
         # at once and the one you were aiming at is the closer one.
-        if fire and not self.dry:
+        if self.reloading:
+            self.reloading = max(0.0, self.reloading - dt)
+            if not self.reloading:
+                self.clip_left = self.settings.round.clip
+        if fire and not self.dry and not self.loaded:
+            # A pull on an empty clip is a click, not a shot: it costs nothing,
+            # and it starts the reload, so nobody is stuck not knowing the button.
+            self.reload()
+        elif fire and not self.dry:
             self.shots += 1
+            if self.settings.round.clip > 0:
+                self.clip_left -= 1
             points = self.settings.score
             radius = self.settings.gun.spread
             best, best_d = None, None
@@ -214,6 +259,8 @@ class World:
                 best.vx = 0.0
                 self.hits += 1
                 self.score += points.duck
+                self.combo += 1
+                self.best_combo = max(self.best_combo, self.combo)
             elif dog_box is not None and _inside(dog_box, aim_x, aim_y):
                 # The dog is in front of everything while he is up, so he is
                 # checked after the ducks only because a duck in range was what
@@ -221,8 +268,10 @@ class World:
                 # costs its own amount rather than a miss on top.
                 self.dog_hits += 1
                 self.score += points.dog
+                self.combo = 0
             else:
                 self.score += points.miss
+                self.combo = 0
 
         # physics
         for d in self.ducks:

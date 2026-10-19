@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 DB_NAME = "leaderboard.db"
@@ -135,6 +137,24 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def session(path: str | None = None) -> Iterator[sqlite3.Connection]:
+    """A connection for one job: committed (or rolled back) and then CLOSED.
+
+    `with connect() as conn` is not that — sqlite3's own `with` only ends the
+    transaction and leaves the file open until the garbage collector gets round
+    to it. The board polls twice every few seconds, so on a long evening the
+    server ran out of file descriptors (256 on macOS) and every request after
+    that answered "unable to open database file".
+    """
+    conn = connect(path)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
 def init(path: str | None = None) -> None:
     """Create the table, bring an older one up to date, then the indexes.
 
@@ -143,7 +163,7 @@ def init(path: str | None = None) -> None:
     first. Safe to call on every start: each step does nothing when there is
     nothing left to do.
     """
-    with connect(path) as conn:
+    with session(path) as conn:
         conn.executescript(SCHEMA)
         _migrate(conn)
         conn.executescript(INDEXES)

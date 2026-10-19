@@ -35,3 +35,15 @@ player.json
 # board taken by hand next to them
 .playwright-mcp/
 board.png
+
+# ./setup: what was picked for tonight (screens, sound, gun), and the board
+# browser's own profile
+launch.json
+.board-browser/
+
+# The board admin's undo journal and the copies it takes before every change
+leaderboard-admin.jsonl
+leaderboard-backups/
+
+# The prize-giving slides: written by `python3 -m leaderboard.winners`, with names in
+winners.html

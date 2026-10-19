@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# The staff's screen for the board: rename, merge and delete players and rounds,
+# with every change backed up and undoable (U). Safe with ./play running.
+#
+#     ./admin                                      # the interactive screen
+#     ./admin players | runs | rename | merge | delete | delete-run | undo
+#     ./admin --db /path/to/leaderboard.db         # a board kept elsewhere
+#
+# See leaderboard/admin.py.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+source tools/venv.sh
+
+exec "$VENV/bin/python" -m leaderboard.admin "$@"

@@ -84,6 +84,7 @@ def payload(world, name: str, client_id: str, input_source: str | None = None,
 # than about the network, which is why they are here next to the delivery lines
 # and shown in the same place on the results screen.
 NOT_SCORED = "PRACTICE — NOT FOR THE BOARD"
+NOT_ENDLESS = "SHOOT THE DUCKS! — JUST FOR FUN, NOT FOR THE BOARD"
 NOT_SIGHTS = "THE CROSSHAIR WAS ON — NOT FOR THE BOARD"
 NOT_SHOT = "NOT A SHOT FIRED — NOT FOR THE BOARD"
 
@@ -105,6 +106,8 @@ def refusal(world, settings) -> str:
     within the rules. Checked last, because the first two say what KIND of round
     it was and this one only says there was not one.
     """
+    if settings.round.endless:
+        return NOT_ENDLESS        # a round with no end has no result to rank
     if not settings.round.scored:
         return NOT_SCORED
     if world.crosshair_used:

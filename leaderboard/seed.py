@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     store.init(args.db)
-    with store.connect(args.db) as conn:
+    with store.session(args.db) as conn:
         if args.from_scores or args.scores:
             print(f"imported {from_scores(conn, args.scores)} rounds from scores.json")
         if not (args.from_scores or args.scores):

@@ -110,6 +110,43 @@ players with names, surnames and form, to see the board full before anyone had
 played; the board has real rounds on it now, and invented ones next to them are
 just a thing to remember to delete.
 
+## Fixing the board: rename, merge, delete
+
+A booth gets typos, three spellings of one player, and the occasional name that
+has to go. `./admin` (`python3 -m leaderboard.admin`) is the staff's screen for
+that, and it is safe with `./play` running — the board shows a change on its
+next poll.
+
+```bash
+./admin                              # the interactive screen
+./admin players [TEXT]               # who is on the board
+./admin runs [NAME]                  # rounds, newest first, with their ids
+./admin rename "Zhneya" "Zhenya"     # a taken name asks first, then merges
+./admin merge Zhenya zhenia --into Женя   # asks first; -y skips
+./admin delete rude                  # a player and every round (asks first)
+./admin delete-run 123               # one round — a test shot, say
+./admin history                      # every change, oldest first
+./admin undo                         # take the last one back
+```
+
+On the screen: **Tab** switches between PLAYERS and ROUNDS, **Enter** opens a
+player's rounds, **Space** marks rows, **R** renames, **M** merges the marked
+players into the highlighted one (whose spelling wins), **D** deletes, **/**
+filters, **U** undoes, **Q** quits.
+
+A player is just the rounds that share a `player_key`, so a rename rewrites the
+name and the key on those rounds, and a merge is a rename onto a key that is
+already taken. After either, every round of the player carries the one spelling,
+because the board shows the spelling of a player's best round and the game's
+name list the spelling of their first.
+
+Nothing is one-way. Before every change the database is copied into
+`leaderboard-backups/` (the last 20 are kept), and the rows the change touched go
+into `leaderboard-admin.jsonl` as they were. `undo` writes back exactly those
+rows, so the rounds played since stay on the board, which restoring a whole
+backup would not do. A name that still has rounds waiting in `pending_runs.jsonl`
+is pointed out: those arrive under the old name the next time the game starts.
+
 ## The data
 
 One table. Every attempt is a row — the "top ten" is only ever a query.
@@ -450,6 +487,7 @@ put them on the board rather than to throw them away for being in the old shape.
 | `leaderboard/server.py` | the HTTP server and its six routes |
 | `leaderboard/board.html` | the browser board: the same data as a tube TV |
 | `leaderboard/seed.py` | import an old `scores.json` |
+| `leaderboard/admin.py`, `admin_tui.py`, `./admin` | rename / merge / delete players and rounds, with backups and undo |
 | `duckhunt/net/leaderboard_client.py` | POST + retries + `pending_runs.jsonl`, and `PlayerLookup` |
 | `duckhunt/core/player.py` | how much name a player may type (`NAME_MAX`) |
 | `duckhunt/frontends/pygame_app.py` | the `name` mode after the round, the names on offer, the delivery line |

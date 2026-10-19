@@ -77,6 +77,17 @@ class RoundSettings:
     # own any more: the intro waits for the trigger, and then this counts down, so
     # a light gun player has time to get the gun up and settled.
     countdown: float = 3.0
+    # A round that never ends on its own: the flock is never used up, and only
+    # ESC stops it. `ducks` is then ignored. For playing rather than for a score.
+    endless: bool = False
+    # A clip of this many shots that has to be RELOADED — A on the remote, R, or
+    # the right mouse button, and a pull on an empty clip starts it as well.
+    # 0 — no clip, the gun never needs reloading (`ammo` is the other limit, the
+    # whole round's worth of shots; the two are independent).
+    clip: int = 0
+    reload: float = 1.0        # seconds a reload takes; the gun is dead meanwhile
+    # Whether the dog comes up laughing at a duck that got away.
+    dog_laughs: bool = True
 
 
 @dataclass(frozen=True)
@@ -130,6 +141,10 @@ class SoundSettings:
     # was read at all, which matters with a light gun. Off: a hit is the quack
     # alone, and the bang means "missed".
     shot_on_hit: bool = True
+    # Which output to play on: any part of its name, case ignored ("tv", "hdmi",
+    # "macbook"). Empty = the system's default output, whatever that is today.
+    # `python3 main.py --list-outputs` prints the names there are.
+    device: str = ""
 
 
 @dataclass(frozen=True)
@@ -147,6 +162,10 @@ class SceneSettings:
     # actually used is printed at startup, so you can read the number off and
     # pin it here.
     display: int = -1
+    # How tall the picture is in fullscreen, as a fraction of the screen's
+    # height; the rest is black. Below 1 shrinks the beacon rectangle with it
+    # when [gun] frame = "picture", and the playing distance follows that width.
+    size: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -245,11 +264,15 @@ class Settings:
     def summary(self) -> str:
         """One-line summary of the values in effect — printed at startup."""
         d, r = self.duck, self.round
-        return (f"{r.ducks} ducks, one every {r.interval:g} s "
-                f"(≈{r.ducks * r.interval:.0f} s round) · "
+        flock = (f"endless, one duck every {r.interval:g} s" if r.endless else
+                 f"{r.ducks} ducks, one every {r.interval:g} s "
+                 f"(≈{r.ducks * r.interval:.0f} s round)")
+        return (f"{flock} · "
                 f"{f'{r.ammo} shots' if r.ammo else 'unlimited ammunition'}"
+                f"{f', a {r.clip}-shot clip' if r.clip else ''}"
                 f"{f', {d.max_alive} at a time' if d.max_alive else ''}"
-                f"{'' if r.scored else ', practice (not for the board)'} · "
+                f"{'' if r.scored or r.endless else ', practice (not for the board)'}"
+                f"{', just for fun (not for the board)' if r.endless else ''} · "
                 f"size {d.width:g}×{d.height:g} · "
                 f"speed {d.speed_min:g}–{d.speed_max:g} · "
                 f"background {self.scene.background}"
@@ -351,6 +374,12 @@ def _validated(s: Settings) -> Settings:
     if rnd.ammo < 0:
         _warn("[round] ammo cannot be negative — using 0 (unlimited)")
         fixes["ammo"] = 0
+    if rnd.clip < 0:
+        _warn("[round] clip cannot be negative — using 0 (no reloading)")
+        fixes["clip"] = 0
+    if rnd.reload < 0:
+        _warn("[round] reload cannot be negative — using 0 (instant)")
+        fixes["reload"] = 0.0
     if fixes:
         rnd = RoundSettings(**{**rnd.__dict__, **fixes})
 

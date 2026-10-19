@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# The evening in one command: the scoreboard, the board fullscreen on its
+# screen, and the game — on the screens, sound and gun ./setup saved, with no
+# questions asked.
+#
+#     ./play                                       # play
+#     ./play --mode practice                       # anything else goes to main.py
+#
+# Quitting the game (Q) ends the evening, board and server with it. Nothing
+# saved yet (no launch.json): run ./setup first. See launch.py.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+source tools/venv.sh
+
+exec "$VENV/bin/python" launch.py "$@"

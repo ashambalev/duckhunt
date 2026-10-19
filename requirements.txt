@@ -1,3 +1,4 @@
 pyserial>=3.5
-pygame>=2.5   # the pixel frontend (ducks + dog)
+pygame-ce>=2.5   # the pixel frontend (ducks + dog); pygame 2.6.1 segfaults in
+                 # event.get() on Homebrew's Python 3.13.16 — the -ce fork doesn't
 pillow>=10    # only for slicing the sprite sheet (tools/slice_spritesheet.py)

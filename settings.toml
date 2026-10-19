@@ -165,9 +165,18 @@ fullscreen = true
 #
 #   display auto of 2 connected [(1470, 956), (1920, 1080)] — using 1920x1080
 #
-# so read the number off that line and put it here to pin it. With a light gun
+# so read the number off that line and put it here to pin it — or answer the
+# question `./run` asks at start, or pass `--display N` for one session. With a light gun
 # this is worth pinning: the beacons are taped to one particular screen.
 display = -1
+
+# How tall the picture is in fullscreen, as a fraction of the screen's height —
+# the rest of the screen stays black. 1.0 fills the height. Smaller is for a
+# room too short for the TV: with [gun] frame = "picture" the beacons go on the
+# corners of the SMALLER picture, and the playing distance shrinks with its
+# width (0.7 → ~30% closer). The picture's exact rectangle is printed at
+# startup; `--size F` overrides this for one session.
+size = 1.0
 
 # The picture is fitted to the screen's HEIGHT, aspect kept, with bars on the
 # sides only. The art pixels then land on a non-whole number of display pixels,
@@ -211,6 +220,13 @@ laugh = 1.0           # the dog at a miss
 # quack alone and the bang comes to mean "missed", which is the more informative
 # pair of sounds once you trust the trigger.
 shot_on_hit = true
+
+# Which audio output to play on: any part of its name, case ignored — "tv",
+# "hdmi", "macbook". Empty = the system's default output. A name that matches no
+# output, or more than one, prints the ones there are and plays on the default.
+# `./run` asks for this (and the display) at every start; `--audio NAME` sets it
+# for one session.
+device = ""
 
 [gun]
 # The shot's radius, as a fraction of the playfield width: a duck falls when its

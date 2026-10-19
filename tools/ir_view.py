@@ -28,6 +28,8 @@ Running it (the game must NOT be running — the port takes one reader):
     .venv/bin/python tools/ir_view.py /dev/tty.usbserial-0001
     .venv/bin/python tools/ir_view.py --no-window            # log only, no pygame
     .venv/bin/python tools/ir_view.py --summary logs/ir_view_*.jsonl   # read a log back
+    .venv/bin/python tools/ir_view.py PORT --next   # ./setup: Enter goes on to
+                                                    # the calibration, Esc stops
 
 Tagging: HOLD 1 2 3 4 while aiming at the corner OF THE BEACON RECTANGLE — where
 the LEDs actually are, which is the picture's corner or the screen's depending on
@@ -507,8 +509,10 @@ class View:
     CAM_RECT = (24, 46, 512, 384)      # x, y, w, h — the camera panel
     SCR_RECT = (24, 500, 512, 288)     # the screen panel (16:9)
 
-    def __init__(self):
+    def __init__(self, next_hint=""):
         import pygame
+
+        self.next_hint = next_hint
 
         self.pg = pygame
         pygame.init()
@@ -619,8 +623,8 @@ class View:
             wx, wy = self.scr_xy(*want)
             pg.draw.circle(s, self.WARN, (int(wx), int(wy)), 10, 1)
         else:
-            self.text("hold 1 TL  2 TR  3 BR  4 BL  5 centre    X/Y flip axes  C  Q",
-                      24, y0 + 16, self.DIM)
+            self.text("hold 1 TL  2 TR  3 BR  4 BL  5 centre    X/Y flip axes  C  Q"
+                      + self.next_hint, 24, y0 + 16, self.DIM)
         self.text(str(log_path.relative_to(REPO)), 24, 4, self.DIM)
         self.text(axes, self.W - 190, 4, self.WARN if axes == "?" else self.DIM)
         pg.display.flip()
@@ -908,7 +912,10 @@ def summarize(path: Path) -> str:
 
 
 # --------------------------------------------------------------------------
-def run(port: str, window: bool) -> Path:
+def run(port: str, window: bool, enter_goes_on: bool = False) -> tuple[Path, bool]:
+    """Watch the gun until Q/Esc (or Ctrl-C). -> (the log, whether it was left
+    with Enter — only with enter_goes_on, which is ./setup's way on to the
+    calibration)."""
     log_dir = REPO / "logs"
     log_dir.mkdir(exist_ok=True)
     path = log_dir / time.strftime("ir_view_%Y%m%d_%H%M%S.jsonl")
@@ -923,7 +930,8 @@ def run(port: str, window: bool) -> Path:
                                              "started": time.strftime("%F %T")}}) + "\n")
 
     bridge = Bridge(port)
-    view = View() if window else None
+    view = View("   Enter calibrate" if enter_goes_on else "") if window else None
+    went_on = False
     print(f"Logging to {path}")
     if not window:
         print("No window (--no-window): press Ctrl-C to stop.")
@@ -966,6 +974,10 @@ def run(port: str, window: bool) -> Path:
                         ch = e.unicode.lower()
                         if e.key in (pg.K_ESCAPE,) or ch == "q":
                             raise KeyboardInterrupt
+                        if enter_goes_on and e.key in (pg.K_RETURN,
+                                                       pg.K_KP_ENTER):
+                            went_on = True
+                            raise KeyboardInterrupt
                         if ch in TAG_KEYS:
                             tag = TAG_KEYS[ch]
                             log.write(json.dumps({"t": round(now, 3),
@@ -992,7 +1004,7 @@ def run(port: str, window: bool) -> Path:
         if view:
             view.pg.quit()
         log.close()
-    return path
+    return path, went_on
 
 
 def main() -> None:
@@ -1000,6 +1012,9 @@ def main() -> None:
     ap.add_argument("port", nargs="?", default=DEFAULT_PORT)
     ap.add_argument("--no-window", action="store_true",
                     help="record the log without opening the pygame window")
+    ap.add_argument("--next", action="store_true",
+                    help="Enter leaves the view to go on (exit 0); Q/Esc exits 1 "
+                         "— how ./setup moves on to the calibration")
     ap.add_argument("--summary", metavar="LOG",
                     help="print the summary of an existing log and exit")
     ap.add_argument("--plan", action="store_true",
@@ -1035,7 +1050,7 @@ def main() -> None:
             print("pygame is not installed — running without the window.")
             window = False
 
-    path = run(args.port, window)
+    path, went_on = run(args.port, window, enter_goes_on=args.next)
     print("\n" + "=" * 72)
     text = summarize(path)
     print(text)
@@ -1044,6 +1059,8 @@ def main() -> None:
     print("=" * 72)
     print(f"\nThe log is {path} — hand it over and it can be read back with:\n"
           f"  .venv/bin/python tools/ir_view.py --summary {path.relative_to(REPO)}")
+    if args.next and not went_on:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

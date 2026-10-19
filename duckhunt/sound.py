@@ -41,6 +41,33 @@ def sounds_dir(assets_dir: str | None = None) -> str:
     return os.path.join(assets_dir, "sounds")
 
 
+def output_names(pygame) -> list[str]:
+    """The audio outputs SDL can see, by name; [] if it cannot say."""
+    try:
+        from pygame._sdl2 import audio
+        return list(audio.get_audio_device_names(False))
+    except Exception:
+        return []
+
+
+def pick_output(names: list[str], wanted: str) -> str | None:
+    """The output `[sound] device` means: an exact name first, else the one name
+    containing it (case ignored). None — and one line saying why — when nothing
+    or more than one matches; the game then plays on the default output rather
+    than guessing which of two TVs was meant."""
+    for name in names:
+        if name.lower() == wanted.lower():
+            return name
+    hits = [n for n in names if wanted.lower() in n.lower()]
+    if len(hits) == 1:
+        return hits[0]
+    have = ", ".join(names) or "none"
+    why = "matches several" if hits else "matches none"
+    print(f"sound: device {wanted!r} {why} of the outputs ({have}) — "
+          f"using the default")
+    return None
+
+
 class Sounds:
     """The loaded clips, and `play(name)`.
 
@@ -80,7 +107,17 @@ class Sounds:
         self.shot_on_hit = True if settings is None else settings.shot_on_hit
 
         try:
-            pygame.mixer.init(RATE, -16, 1, BUFFER)
+            device = None
+            if settings is not None and settings.device:
+                device = pick_output(output_names(pygame), settings.device)
+            if device is not None:
+                # pygame.init() already opened the default output, and init()
+                # on a running mixer is a no-op — so close it and reopen there
+                pygame.mixer.quit()
+                pygame.mixer.init(RATE, -16, 1, BUFFER, devicename=device)
+                print(f"sound: playing on {device}")
+            else:
+                pygame.mixer.init(RATE, -16, 1, BUFFER)
             pygame.mixer.set_num_channels(CHANNELS)
         except Exception as exc:
             # no audio device (over ssh, or a Mac with everything muted at the

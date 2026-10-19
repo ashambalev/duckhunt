@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Getting the room ready: a picker for the screens, the sound and the gun, then
+# the gun's debug view (the four beacons and the aim — Enter goes on), then the
+# calibration on the game's screen. The picks are saved in launch.json for
+# ./play.
+#
+#     ./setup                                      # pick, check, calibrate
+#     ./setup --mode practice                      # anything else goes to main.py
+#
+# Quitting the game brings the picker back; Esc there ends it. See launch.py.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+source tools/venv.sh
+
+exec "$VENV/bin/python" launch.py --setup "$@"

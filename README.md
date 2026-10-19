@@ -36,6 +36,53 @@ line, so the macOS Bluetooth stack is never involved. The remote stays intact.
 
 ## Running it
 
+**An evening at a venue** — the game on one screen, the scoreboard on another:
+
+```bash
+./setup                                  # once: pick screens + sound + gun, check the gun, calibrate
+./play                                   # then: the board and the game, no questions
+```
+
+`./setup` opens a small window that asks which screen the game goes on, which
+output its sound goes to, which screen the scoreboard goes on, and what aims (the
+gun's port or the mouse). Last time's picks are already selected (`launch.json`,
+remembered by the monitor's own serial, so SDL renumbering the screens does not
+move the game). **Enter** saves them and opens the gun's debug view
+(`tools/ir_view.py`): the four beacons as the camera sees them and where the gun
+says it points. **Enter** there goes on to the calibration on the game's screen
+(see below), and the game after it — off the record, no board. Quitting the game
+brings the picker back; **Esc** there ends the setup. With the mouse picked it
+goes straight to the game: there is no gun to check or sight in.
+
+`./play` asks nothing. It takes what `./setup` saved, starts the scoreboard
+server, opens the board fullscreen on its screen in a kiosk Chrome with a profile
+of its own (no tabs, no address bar, none of your logins), and the game on its
+screen. A screen or gun that has gone missing since falls back (the last screen,
+no board, the mouse) and says so in the terminal. The game stays up when you click
+away to another app — the gun keeps working; only the keyboard (the name after a
+round, the hotkeys) needs the game focused. **Q** in the game ends the evening and
+closes the board and the server.
+
+A typo, a duplicate spelling or a name that has to go: **`./admin`** renames,
+merges and deletes players and rounds, safe with `./play` running, and every
+change can be undone (see [`docs/LEADERBOARD.md`](docs/LEADERBOARD.md)).
+
+**One screen, or by hand:**
+
+```bash
+./run                                    # sets up .venv on the first go, then plays
+./run --serial /dev/tty.usbserial-0001   # ... with the light gun
+```
+
+`./run` makes `.venv` with Python 3.10–3.13 (not 3.14: a source
+build comes out without fonts or sound; and it is pygame-ce, as pygame 2.6.1
+segfaults on Homebrew's 3.13.16), installs `requirements.txt`, and
+asks **which display and audio output** to play on — Enter keeps
+`[scene] display` / `[sound] device` from settings.toml, and `--display N` /
+`--audio NAME` skip the question. Any other argument goes on to `main.py`.
+
+By hand:
+
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt

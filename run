@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Start the game, setting up .venv first if it is not there yet.
+#
+#     ./run                                        # aim with the mouse
+#     ./run --serial /dev/tty.usbserial-0001       # aim with the light gun
+#     ./run --display 1 --audio tv                 # skip the questions
+#
+# Every argument goes straight to main.py. In a terminal it first asks which
+# display and audio output to play on (main.py --choose); Enter keeps
+# settings.toml's choice, and a --display / --audio given here is not asked.
+#
+# The venv is set up by tools/venv.sh. ./setup picks the screens, sound and gun
+# and calibrates; ./play then starts the whole evening — the game, the
+# scoreboard and the browser on the second screen — with those picks.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+source tools/venv.sh
+
+CHOOSE=()
+[ -t 0 ] && CHOOSE=(--choose)
+exec "$VENV/bin/python" main.py ${CHOOSE[@]+"${CHOOSE[@]}"} "$@"

@@ -27,7 +27,7 @@ def db(tmp_path):
 
 @pytest.fixture()
 def conn(db):
-    with store.connect(db) as c:
+    with store.session(db) as c:
         yield c
 
 

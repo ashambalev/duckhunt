@@ -202,7 +202,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_page()
                 return
             ducks = num("ducks", 100)
-            with store.connect(self.db_path) as conn:
+            with store.session(self.db_path) as conn:
                 if url.path == "/api/board":
                     self._send({"ok": True, "ducks": ducks,
                                 "rows": store.board(conn, ducks,
@@ -239,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
             if url.path != "/api/runs":
                 raise Rejected("no such route", 404)
             run = validate(self._body())
-            with store.connect(self.db_path) as conn:
+            with store.session(self.db_path) as conn:
                 result = store.insert_run(conn, run)
             when = run["finished_at"][11:19]
             acc = run["hits"] / run["shots"] * 100 if run["shots"] else 0

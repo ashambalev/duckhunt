@@ -69,14 +69,32 @@ def main() -> None:
                          "[leaderboard] in settings.toml)")
     ap.add_argument("--no-leaderboard", dest="board", action="store_false",
                     help="do not send this session's rounds anywhere")
+    ap.add_argument("--display", type=int, metavar="N",
+                    help="which monitor to open on, from 0 (overrides [scene] "
+                         "display; -1 lets SDL choose)")
+    ap.add_argument("--size", type=float, metavar="F",
+                    help="shrink the fullscreen picture to F of the screen's "
+                         "height, black all round (overrides [scene] size): "
+                         "beacons on the smaller picture's corners can be "
+                         "seen from closer")
+    ap.add_argument("--audio", metavar="NAME",
+                    help="which audio output to play on: any part of its name "
+                         "(overrides [sound] device)")
+    ap.add_argument("--choose", action="store_true",
+                    help="ask which display and audio output to use before the "
+                         "window opens; Enter keeps what the settings say")
     args = ap.parse_args()
 
     # Every round there is to play, not just the one asked for: the title screen
     # switches between them, so they are all resolved before the window opens —
     # a mode is only allowed to change the round (see core/modes.py), which is
     # exactly what makes that safe to do mid-evening.
-    all_modes = [modes_core.with_settings(m, with_leaderboard(m.settings, args))
-                 for m in modes_core.load_all(args.settings)]
+    loaded = modes_core.load_all(args.settings)
+    if args.choose:
+        choose_outputs(loaded[0].settings, args)
+    all_modes = [modes_core.with_settings(
+                     m, with_outputs(with_leaderboard(m.settings, args), args))
+                 for m in loaded]
     start = starting_mode(all_modes, args)
     settings = all_modes[start].settings
     print(f"{all_modes[start].name}: {settings.summary()}"
@@ -124,6 +142,75 @@ def with_leaderboard(settings, args):
     return replace(settings, leaderboard=lb)
 
 
+def with_outputs(settings, args):
+    """`--display`, `--size` and `--audio` (typed, or picked by `--choose`) beat
+    [scene] display and size and [sound] device — for this session only, the file is untouched."""
+    if args.display is not None:
+        settings = replace(settings, scene=replace(settings.scene,
+                                                   display=args.display))
+    if args.size is not None:
+        settings = replace(settings, scene=replace(settings.scene,
+                                                   size=args.size))
+    if args.audio is not None:
+        settings = replace(settings, sound=replace(settings.sound,
+                                                   device=args.audio))
+    return settings
+
+
+def choose_outputs(settings, args) -> None:
+    """Ask on the terminal which display and audio output to use, and put the
+    answers in args.display / args.audio. A question already answered on the
+    command line is not asked again; Enter keeps what the settings say."""
+    import os
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+    import pygame
+    from duckhunt.sound import output_names
+
+    pygame.display.init()
+    displays = pygame.display.get_desktop_sizes()
+    pygame.display.quit()
+    pygame.mixer.init()          # SDL lists outputs only with audio up
+    outputs = output_names(pygame)
+    pygame.mixer.quit()
+
+    if args.display is None and len(displays) > 1:
+        now = settings.scene.display
+        print("\nDisplay:")
+        for i, (w, h) in enumerate(displays):
+            print(f"  {i}  {w}x{h}{'   <- settings' if i == now else ''}")
+        keep = f"display {now}" if now >= 0 else "let SDL choose"
+        args.display = ask(f"Display number [Enter = {keep}]: ",
+                           range(len(displays)))
+    elif args.display is None:
+        w, h = displays[0]
+        print(f"\nDisplay: only one connected ({w}x{h}) — playing on it")
+
+    if args.audio is None and len(outputs) > 1:
+        now = settings.sound.device
+        print("\nAudio output:")
+        for i, name in enumerate(outputs):
+            print(f"  {i}  {name}")
+        keep = repr(now) if now else "system default"
+        picked = ask(f"Output number [Enter = {keep}]: ", range(len(outputs)))
+        if picked is not None:
+            args.audio = outputs[picked]
+    print()
+
+
+def ask(prompt, allowed):
+    """A number from `allowed`, or None for a bare Enter; asks again otherwise."""
+    while True:
+        try:
+            answer = input(prompt).strip()
+        except EOFError:
+            return None
+        if not answer:
+            return None
+        if answer.isdigit() and int(answer) in allowed:
+            return int(answer)
+        print(f"  pick one of {allowed.start}..{allowed.stop - 1}, or Enter")
+
+
 def starting_mode(all_modes, args) -> int:
     """Which mode the game opens on — and a refusal rather than a fallback.
 
@@ -149,6 +236,10 @@ def print_result(w) -> None:
     """Print the round result. The board itself lives on its own screen."""
     ammo = "" if w.ammo < 0 else f", {w.ammo} left in the magazine"
     dog = "" if not w.dog_hits else f", and the dog {w.dog_hits}×"
+    if w.endless:
+        print(f"\nResult: {w.hits} ducks, best combo ×{w.best_combo} "
+              f"({w.accuracy:.0f}% accuracy, {w.shots} shots{dog}). Bye! 🦆")
+        return
     print(f"\nResult: {w.score} points — {w.hits} of {w.total} ducks "
           f"({w.accuracy:.0f}% accuracy, {w.shots} shots{ammo}{dog}). Bye! 🦆")
 

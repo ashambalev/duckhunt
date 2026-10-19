@@ -181,6 +181,8 @@ DOG_LAUGH = [
 # round on the disk — a control that does nothing is worse than no control at
 # all. Kept out here so `run()` can recognise it by identity.
 MODE_ROW = ("M · A on the title", "which round — %s")
+# ... and the reload, listed only when one of the rounds on the disk has a clip.
+RELOAD_ROW = ("R · A · RIGHT CLICK", "reload the clip (endless)")
 
 # The controls, in one place: shown on the title screen and on the result screen,
 # because a player standing three metres away with a gun in both hands has no
@@ -193,6 +195,7 @@ KEYMAP = [
     ("ESC", "stop the round — the score still counts"),
     ("Q", "quit Duck Hunt"),
     ("C · A in a round", "show / hide the crosshair"),
+    RELOAD_ROW,
     ("B", "next background"),
     ("G", "the gun's report rate and dropouts"),
     ("F1", "sight the gun in on five targets"),
@@ -277,7 +280,46 @@ def _open_fullscreen(pygame, want_display, desktops):
     for _ in range(3):                  # let the window get on screen first
         pygame.event.pump()
         time.sleep(0.05)
-    return pygame.display.set_mode(size, pygame.FULLSCREEN, **where)
+    pygame.display.set_mode(size, pygame.FULLSCREEN, **where)
+    # ... and make it the desktop kind of fullscreen. pygame asks SDL for the
+    # EXCLUSIVE kind whenever the size is not the display's mode in pixels —
+    # which on a Retina screen it never is — and on macOS exclusive means SDL
+    # captures the display behind a shielding window, which paints the game
+    # black whenever another app has the focus: ./play opening the board in
+    # Chrome blacked out the game until it was clicked. Desktop fullscreen is an
+    # ordinary borderless window the size of the screen and stays drawn.
+    from pygame._sdl2.video import Window
+    Window.from_display_module().set_fullscreen(desktop=True)
+    _above_menu_bar(pygame)
+    return pygame.display.get_surface()
+
+
+def _above_menu_bar(pygame) -> None:
+    """Keep the fullscreen window over the menu bar even without the focus.
+
+    Desktop fullscreen hides the menu bar only while the game is the active app;
+    click the board in the browser and the bar comes back over the top of the
+    picture. Raising the NSWindow to the status-bar level (25, one over the
+    menu bar's 24) keeps it covered. SDL sets the level itself on every focus
+    change (shielding when focused, normal when not), so this is called again
+    on each WINDOWFOCUSLOST. macOS only, and nothing if it fails."""
+    if sys.platform != "darwin":
+        return
+    try:
+        import ctypes
+        import ctypes.util
+        capsule = pygame.display.get_wm_info()["window"]
+        get = ctypes.pythonapi.PyCapsule_GetPointer
+        get.restype, get.argtypes = ctypes.c_void_p, [ctypes.py_object, ctypes.c_char_p]
+        nswindow = get(capsule, b"window")
+        objc = ctypes.CDLL(ctypes.util.find_library("objc"))
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        send = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long)(
+            ("objc_msgSend", objc))
+        send(nswindow, objc.sel_registerName(b"setLevel:"), 25)
+    except Exception as e:                              # noqa: BLE001
+        print(f"could not raise the window over the menu bar: {e}")
 
 
 def _fit_font(pygame, rows, width, biggest=22):
@@ -523,6 +565,12 @@ class PygameFrontend:
         # set before the video subsystem comes up; setdefault leaves it yours to
         # override from the shell.
         os.environ.setdefault("SDL_VIDEO_MAC_FULLSCREEN_SPACES", "0")
+        # ... and keep it on screen when another app takes the focus. SDL's
+        # "auto" minimises a fullscreen window that is not a desktop-sized one
+        # the moment it loses focus, so answering mail on the laptop took the
+        # game off the TV in the middle of somebody's round. The gun does not
+        # need focus — only the keyboard does (the name screen, the hotkeys).
+        os.environ.setdefault("SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS", "0")
 
         # The mixer's buffer size is taken when the subsystem comes up, so the
         # ask has to happen before init() — after it, the sounds play at SDL's
@@ -573,9 +621,12 @@ class PygameFrontend:
             # nearest-neighbour, so nothing smears — and the ducks are half
             # again as big as a whole-number letterboxed fit makes them, which
             # is the whole reason this is the only fit there is.
-            H, W = sh, int(round(bw * sh / bh))
-            if W > sw:                          # a screen narrower than the art
-                W, H = sw, int(round(bh * sw / bw))
+            # [scene] size below 1 leaves a black border all round, so the
+            # beacons can go on a smaller rectangle and be seen from closer.
+            size = min(1.0, max(0.1, self.world.settings.scene.size))
+            H, W = int(round(sh * size)), int(round(bw * sh * size / bh))
+            if W > sw * size:                   # a screen narrower than the art
+                W, H = int(round(sw * size)), int(round(bh * sw * size / bw))
             k = max(1, round(H / bh))
             offset = ((sw - W) // 2, (sh - H) // 2)
             screen = pygame.Surface((W, H))
@@ -665,11 +716,20 @@ class PygameFrontend:
             Rounds that do not count shots (practice) have no belt at all. A
             magazine that cannot run out is not a thing to watch.
             """
-            cap = settings.round.ammo
+            cap, per = settings.round.ammo, SHELL_SHOTS
+            left = max(0, self.world.ammo)
+            if settings.round.clip > 0:
+                # A clip is a handful of rounds, one shell each, and it fills
+                # back up shell by shell while the reload runs.
+                cap, per = settings.round.clip, 1
+                left = self.world.clip_left
+                if self.world.reloading:
+                    done = 1.0 - self.world.reloading / max(1e-6,
+                                                            settings.round.reload)
+                    left = int(cap * done)
             if cap <= 0:
                 return
-            left = max(0, self.world.ammo)
-            shells = -(-cap // SHELL_SHOTS)     # ceil: a part-full last shell shows
+            shells = -(-cap // per)             # ceil: a part-full last shell shows
 
             floor_y = H - max(6, int(H * 0.02))
             # nothing flies below this, so this is where the belt may start
@@ -697,7 +757,7 @@ class PygameFrontend:
             top = floor_y - tall
             for i in range(shells):
                 x = HUD_X + i * (wide + gap)
-                quarters = min(SHELL_SHOTS, max(0, left - i * SHELL_SHOTS))
+                quarters = min(per, max(0, left - i * per))
                 # the hull first, dark, so a spent loop is still a loop on the
                 # belt — how much has gone is half of what a bandolier tells you
                 pygame.draw.rect(screen, (46, 40, 38), (x, top, wide, body_h))
@@ -709,7 +769,7 @@ class PygameFrontend:
                 if quarters:
                     # the load empties from the top, so what is left is the
                     # BOTTOM quarters — the shell shortens the way a shell does
-                    fill = int(round(body_h * quarters / SHELL_SHOTS))
+                    fill = int(round(body_h * quarters / per))
                     y = top + body_h - fill
                     pygame.draw.rect(screen, (198, 46, 38), (x, y, wide, fill))
                     pygame.draw.line(screen, (240, 96, 84),
@@ -718,11 +778,19 @@ class PygameFrontend:
                     # only glanced at
                     if detail:
                         for q in range(1, quarters):
-                            qy = top + body_h - int(round(body_h * q / SHELL_SHOTS))
+                            qy = top + body_h - int(round(body_h * q / per))
                             pygame.draw.line(screen, (126, 28, 22),
                                              (x + 1, qy), (x + wide - 2, qy))
                 if detail:
                     pygame.draw.rect(screen, (24, 20, 18), (x, top, wide, tall), 1)
+            if settings.round.clip > 0 and not self.world.loaded:
+                # what to do about it, next to the belt, blinking
+                word = ("RELOADING" if self.world.reloading else
+                        "RELOAD — A · R · RIGHT CLICK")
+                if self.world.reloading or int(t_mode * 3) % 2:
+                    img = font.render(word, True, (255, 225, 90))
+                    screen.blit(img, (HUD_X + shells * (wide + gap) + 2 * gap,
+                                      top + (tall - img.get_height()) // 2))
 
         def draw_crosshair():
             # Hidden is a real way to play a light gun: you aim down the barrel,
@@ -757,6 +825,90 @@ class PygameFrontend:
         # the countdown digit: as big as the picture can carry, so it reads from
         # across the room with a gun in your hands
         huge = pygame.font.SysFont("Menlo,monospace", max(60, H // 4), bold=True)
+        # the endless round's one number: ducks down, readable across the room
+        tally = pygame.font.SysFont("Menlo,monospace", max(48, H // 7), bold=True)
+        # The endless round's combo: what it looks like, and what it last did.
+        # `world` is which round the rest belongs to, so a new round starts the
+        # show from nothing without every reset site having to know about it.
+        fx = {"world": None}
+        floats = []                # "×N" rising off a downed duck: {x, y, t, n}
+
+        def combo_ink(n):
+            """White, then gold, then orange, then a hot colour that cycles."""
+            if n < 5:
+                return (255, 255, 255)
+            if n < 10:
+                return (255, 225, 90)
+            if n < 20:
+                return (255, 150, 50)
+            hue = (t_mode * 360) % 360
+            c = pygame.Color(0)
+            c.hsva = (hue, 70, 100, 100)
+            return (c.r, c.g, c.b)
+
+        def shadowed(face, text, ink, cx, top, scale=1.0, alpha=255):
+            """Centred text with a drop shadow, optionally scaled and faded."""
+            for col, d in (((0, 0, 0), max(2, k // 2)), (ink, 0)):
+                img = face.render(text, True, col)
+                if scale != 1.0:
+                    img = pygame.transform.smoothscale(
+                        img, (max(1, int(img.get_width() * scale)),
+                              max(1, int(img.get_height() * scale))))
+                if alpha < 255:
+                    img.set_alpha(alpha)
+                screen.blit(img, (cx - img.get_width() // 2 + d, top + d))
+
+        def draw_combo(dt, tally_bottom):
+            """The combo, under the tally: it pulses on every hit, grows hotter
+            as it climbs, shouts every fifth duck, and says so when it breaks."""
+            w = self.world
+            if fx["world"] is not w:
+                fx.update(world=w, last=0, hit=9.0, broke=9.0, lost=0,
+                          shout=9.0, shout_n=0)
+                floats.clear()
+            fx["hit"] += dt
+            fx["broke"] += dt
+            fx["shout"] += dt
+            if w.combo > fx["last"]:
+                fx["hit"] = 0.0
+                if w.combo >= 5 and w.combo % 5 == 0:
+                    fx["shout"], fx["shout_n"] = 0.0, w.combo
+                if w.combo >= 2:
+                    # where the shot was is where the duck is folding up
+                    floats.append({"x": crosshair[0], "y": crosshair[1],
+                                   "t": 0.0, "n": w.combo})
+            elif w.combo < fx["last"] and fx["last"] >= 3:
+                fx["broke"], fx["lost"] = 0.0, fx["last"]
+            fx["last"] = w.combo
+
+            for f in floats:
+                f["t"] += dt
+            floats[:] = [f for f in floats if f["t"] < 0.9]
+            for f in floats:
+                life = f["t"] / 0.9
+                shadowed(big, f"×{f['n']}", combo_ink(f["n"]),
+                         int(f["x"] * W), int(f["y"] * H - life * H * 0.08),
+                         scale=1.0 + 0.3 * (1 - life),
+                         alpha=int(255 * (1 - life * life)))
+
+            if w.combo >= 2:
+                # a kick on every hit that settles in a fifth of a second
+                pulse = 1.0 + 0.45 * max(0.0, 1.0 - fx["hit"] / 0.2)
+                shadowed(big, f"×{w.combo} COMBO", combo_ink(w.combo),
+                         W // 2, tally_bottom + 4, scale=pulse)
+            elif fx["broke"] < 0.9:
+                shadowed(font, f"COMBO BROKEN — ×{fx['lost']}", (255, 90, 80),
+                         W // 2, tally_bottom + 8,
+                         alpha=int(255 * (1 - fx["broke"] / 0.9)))
+
+            if fx["shout"] < 1.0:
+                # every fifth duck in a row gets the middle of the picture
+                p = fx["shout"]
+                grow = min(1.0, p / 0.15)
+                shadowed(huge, f"×{fx['shout_n']}!", combo_ink(fx["shout_n"]),
+                         W // 2, int(H * 0.30),
+                         scale=0.6 + 0.5 * grow,
+                         alpha=int(255 * min(1.0, (1.0 - p) / 0.4)))
         # The keymap this session actually has. The mode row names the rounds
         # that were found on disk rather than a fixed pair, and goes away when
         # there is only one of them — a control that does nothing is worse than
@@ -765,7 +917,10 @@ class PygameFrontend:
         listed = " / ".join(names[:3]) + ("…" if len(names) > 3 else "")
         keymap = []
         for row in KEYMAP:
-            if row is not MODE_ROW:
+            if row is RELOAD_ROW:
+                if any(m.settings.round.clip > 0 for m in self.modes):
+                    keymap.append(row)
+            elif row is not MODE_ROW:
                 keymap.append(row)
             elif len(self.modes) > 1:
                 keymap.append((row[0], row[1] % listed))
@@ -990,21 +1145,37 @@ class PygameFrontend:
             # with forty shots is not the same round as ten with twelve, and only
             # one of those two numbers says so. It can be negative, which is the
             # point and reads as one.
-            draw_center(f"SCORE {w.score}", big, y, (255, 225, 90))
-            y += big.get_height() + 2
-            draw_center(f"{w.hits} OF {w.total} DUCKS", font, y, (255, 255, 240))
-            y += font.get_height() + 2
-            draw_center(f"{w.shots} shots  ·  {w.accuracy:.0f}% accuracy  "
-                        f"·  {w.elapsed:.0f}s", font, y)
+            if w.endless:
+                # Nothing was being scored, so the headline is the tally, and
+                # the line under it is the best run of it.
+                draw_center(f"{w.hits} DUCKS", big, y, (255, 225, 90))
+                y += big.get_height() + 2
+                draw_center(f"BEST COMBO ×{w.best_combo}", font, y,
+                            (255, 255, 240))
+                y += font.get_height() + 2
+                draw_center(f"{w.shots} shots  ·  {w.accuracy:.0f}% accuracy",
+                            font, y)
+            else:
+                draw_center(f"SCORE {w.score}", big, y, (255, 225, 90))
+                y += big.get_height() + 2
+                draw_center(f"{w.hits} OF {w.total} DUCKS", font, y,
+                            (255, 255, 240))
+                y += font.get_height() + 2
+                draw_center(f"{w.shots} shots  ·  {w.accuracy:.0f}% accuracy  "
+                            f"·  {w.elapsed:.0f}s", font, y)
             y += font.get_height() + 4
-            if w.dog_hits:
+            if w.dog_hits and w.endless:
+                draw_center(f"THE DOG GOT SHOT {w.dog_hits} × — HE FORGIVES YOU",
+                            font, y, (255, 170, 120))
+                y += font.get_height()
+            elif w.dog_hits:
                 # He is on your side and he fetches your ducks, so what it cost
                 # to shoot him is said out loud rather than left inside the
                 # score to be worked out from the accuracy.
                 draw_center(f"THE DOG: {w.dog_hits} × {settings.score.dog}",
                             font, y, (255, 170, 120))
                 y += font.get_height()
-            if aborted:
+            if aborted and not w.endless:
                 # stopped with ESC: say so, because "12 of 100" otherwise reads
                 # like a bad round rather than a short one
                 draw_center(f"STOPPED EARLY — {w.released} of {w.total} ducks "
@@ -1280,6 +1451,7 @@ class PygameFrontend:
         crosshair = [0.5, 0.5]
         marks = []                 # where the shots went: {x, y, t, hit}
         prev_mouse_down = False
+        prev_right_down = False
 
         def next_mode(step=1):
             """The next round in the list — the title screen's own control.
@@ -1336,6 +1508,11 @@ class PygameFrontend:
             for e in pygame.event.get():
                 if e.type == pygame.QUIT:
                     running = False
+                elif e.type == pygame.WINDOWFOCUSLOST:
+                    # SDL drops a fullscreen window to the normal level the
+                    # moment another app is clicked — back over the menu bar
+                    if settings.scene.fullscreen:
+                        _above_menu_bar(pygame)
                 elif e.type != pygame.KEYDOWN:
                     continue
                 elif mode == "name":
@@ -1378,6 +1555,8 @@ class PygameFrontend:
                     running = False
                 elif e.key == pygame.K_c:
                     hide_cross[0] = not hide_cross[0]
+                elif e.key == pygame.K_r and mode == "play":
+                    self.world.reload()
                 elif e.key == pygame.K_g:
                     show_gun[0] = not show_gun[0]
                 elif e.key == pygame.K_F1 and mode in ("intro", "over"):
@@ -1435,15 +1614,23 @@ class PygameFrontend:
                         # this one just brought up.
                         send_name()
                         fire = False
+                    elif mode == "play" and settings.round.clip > 0:
+                        # a round with a clip has its crosshair off and needs
+                        # A for the one thing a gun with a clip needs
+                        self.world.reload()
                     else:
                         hide_cross[0] = not hide_cross[0]
             else:
                 mx, my = pygame.mouse.get_pos()
                 crosshair[0] = min(1.0, max(0.0, (mx - offset[0]) / W))
                 crosshair[1] = min(1.0, max(0.0, (my - offset[1]) / H))
-                md = pygame.mouse.get_pressed()[0]
+                buttons = pygame.mouse.get_pressed()
+                md = buttons[0]
                 fire = md and not prev_mouse_down
                 prev_mouse_down = md
+                if buttons[2] and not prev_right_down and mode == "play":
+                    self.world.reload()
+                prev_right_down = buttons[2]
 
             # The round starts on the TRIGGER, not on a timer: a light gun player
             # needs both hands on the gun before the first duck, and pulling the
@@ -1516,7 +1703,11 @@ class PygameFrontend:
                 # says how long it is: the mode is not a setting hidden in a
                 # file any more, it is the thing the next trigger pull picks.
                 head = (f"{mode_now.name}  ·  " if len(self.modes) > 1 else "")
-                draw_center(f"{head}{self.world.total} DUCKS  ·  "
+                flock = ("ENDLESS" if self.world.endless
+                         else f"{self.world.total} DUCKS")
+                clip = (f"{settings.round.clip}-SHOT CLIP  ·  "
+                        if settings.round.clip > 0 else "")
+                draw_center(f"{head}{flock}  ·  {clip}"
                             f"{settings.round.countdown:g}s COUNTDOWN", font, y,
                             (255, 255, 240))
                 y += font.get_height() + 2
@@ -1549,7 +1740,8 @@ class PygameFrontend:
                     count = huge.render(str(math.ceil(left)), True, (255, 225, 90))
                     cy0 = int(H * 0.18)
                     screen.blit(count, (W // 2 - count.get_width() // 2, cy0))
-                    sub = big.render("GET READY", True, (255, 255, 255))
+                    sub = big.render("SHOOT THE DUCKS!" if self.world.endless
+                                     else "GET READY", True, (255, 255, 255))
                     screen.blit(sub, (W // 2 - sub.get_width() // 2,
                                       cy0 + count.get_height() + 4))
                     draw_crosshair()
@@ -1616,7 +1808,8 @@ class PygameFrontend:
             if pop_kind is None:
                 if self.world.landed > last_landed:
                     pop_kind, pop_t = "catch", 0.0
-                elif self.world.escaped > last_escaped:
+                elif (self.world.escaped > last_escaped
+                      and settings.round.dog_laughs):
                     pop_kind, pop_t = "laugh", 0.0
                     # the laugh goes with the dog coming up out of the grass, not
                     # with the shot that missed: a duck is only really missed once
@@ -1660,11 +1853,23 @@ class PygameFrontend:
             # HUD: the score, hits, how much of the flock is out, what is left in
             # the magazine, round time
             w = self.world
-            hud = hud_font.render(
-                hud_text(w.score, w.hits, w.released, w.ammo, w.elapsed,
-                         w.accuracy),
-                True, (255, 255, 255))
-            screen.blit(hud, (HUD_X, 12))
+            if w.endless:
+                # No score, no clock, no flock to count down: just how many
+                # ducks have come down, big, with a shadow so it reads on sky.
+                for ink, dx in (((0, 0, 0), 3), ((255, 255, 255), 0)):
+                    img = tally.render(str(w.hits), True, ink)
+                    screen.blit(img, (W // 2 - img.get_width() // 2 + dx,
+                                      int(H * 0.02) + dx))
+                hud = img
+                # digits have no descenders: hang the combo off the baseline,
+                # not off the bottom of the font's box, or it floats away
+                draw_combo(dt, int(H * 0.02) + tally.get_ascent())
+            else:
+                hud = hud_font.render(
+                    hud_text(w.score, w.hits, w.released, w.ammo, w.elapsed,
+                             w.accuracy),
+                    True, (255, 255, 255))
+                screen.blit(hud, (HUD_X, 12))
 
             # G: what the gun's stream actually looks like. "Laggy" has three
             # different causes that feel identical — a slow rate, reports

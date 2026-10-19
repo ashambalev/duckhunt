@@ -151,12 +151,12 @@ def old_database(path: str) -> None:
 
 
 def columns(path: str) -> set[str]:
-    with store.connect(path) as conn:
+    with store.session(path) as conn:
         return {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
 
 
 def indexes(path: str) -> dict[str, str]:
-    with store.connect(path) as conn:
+    with store.session(path) as conn:
         return {r["name"]: r["sql"] or "" for r in conn.execute(
             "SELECT name, sql FROM sqlite_master WHERE type = 'index'")}
 
@@ -175,7 +175,7 @@ def test_an_old_row_keeps_its_place_because_its_score_was_its_hits(tmp_path):
     path = str(tmp_path / "old.db")
     old_database(path)
     store.init(path)
-    with store.connect(path) as conn:
+    with store.session(path) as conn:
         row = conn.execute("SELECT hits, score, dog_hits, crosshair "
                            "FROM runs").fetchone()
         assert (row["hits"], row["score"]) == (31, 31)
@@ -200,10 +200,10 @@ def test_a_real_score_survives_a_later_init(tmp_path):
     path = str(tmp_path / "old.db")
     old_database(path)
     store.init(path)
-    with store.connect(path) as conn:
+    with store.session(path) as conn:
         put(conn, "Ann", score=-12, hits=4, shots=40)
     store.init(path)
-    with store.connect(path) as conn:
+    with store.session(path) as conn:
         assert conn.execute("SELECT score FROM runs WHERE player_key = 'ann'"
                             ).fetchone()["score"] == -12
 
@@ -211,12 +211,12 @@ def test_a_real_score_survives_a_later_init(tmp_path):
 def test_init_twice_changes_nothing(tmp_path):
     path = str(tmp_path / "fresh.db")
     store.init(path)
-    with store.connect(path) as conn:
+    with store.session(path) as conn:
         put(conn, "Ann", score=30, hits=20, shots=34)
     before = (indexes(path), columns(path))
     store.init(path)
     assert (indexes(path), columns(path)) == before
-    with store.connect(path) as conn:
+    with store.session(path) as conn:
         assert store.board(conn, ducks=40)[0]["score"] == 30
 
 
@@ -358,3 +358,12 @@ def test_a_round_cannot_have_hit_a_duck_and_the_dog_with_one_shot(url):
     body = dict(scored_row("Impossible", hits=1, shots=1, ducks=40, uuid="c" * 32), dog_hits=1)
     code, answer = post(url, body)
     assert code == 400 and "dog_hits" in answer["error"]
+
+
+def test_a_session_closes_its_connection(db):
+    # sqlite3's own `with` leaves the file open; the board polling every few
+    # seconds ran the server out of file descriptors that way
+    with store.session(db) as conn:
+        conn.execute("SELECT 1")
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
